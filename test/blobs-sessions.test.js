@@ -3,6 +3,24 @@ import assert from 'node:assert/strict';
 import { blobsSessions } from '../src/session-backends.js';
 import { createSessions } from '../src/sessions.js';
 import { createBlobsStore } from '../src/blobs-store.js';
+import { createOuija } from '../src/ouija.js';
+
+test('Ouija Blobs CAS preserves concurrent positions and one frozen receipt across workers', async () => {
+  const blobs = atomicBlobs();
+  const messages = createBlobsStore(blobs);
+  const workers = Array.from({ length: 6 }, () => createOuija(blobsSessions(() => blobs), messages));
+  const { token } = await workers[0].start();
+  await workers[0].write(token, 'name', 1, 'A');
+  await Promise.all(workers.map((worker, i) => worker.write(token, 'message', i + 1, 'ABCdef'[i])));
+  const conflicts = await Promise.allSettled([workers[0].write(token, 'message', 7, 'X'), workers[1].write(token, 'message', 7, 'Y')]);
+  assert.equal(conflicts.filter(r => r.status === 'fulfilled').length, 1);
+  assert.equal(conflicts.find(r => r.status === 'rejected').reason.status, 409);
+  const receipts = await Promise.all(workers.map(worker => worker.submit(token)));
+  assert.equal(new Set(receipts.map(r => r.id)).size, 1);
+  assert.match(receipts[0].message, /^ABCdef[XY]$/);
+  assert.equal(receipts[0].submission_method, 'ouija_get');
+  assert.equal((await messages.recent()).length, 1);
+});
 
 // Models the documented service's atomic conditional-write contract, not the
 // file-based SDK emulator's check-then-write implementation.

@@ -13,24 +13,24 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       agent_name TEXT NOT NULL CHECK(length(agent_name) BETWEEN 1 AND 80),
       message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 2000),
       timestamp TEXT NOT NULL,
-      submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form', 'api', 'unknown', 'session_get'))
+      submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form', 'api', 'unknown', 'session_get', 'ouija_get'))
     );`);
   // Old records predate route tracking; do not infer how they were submitted.
   if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'submission_method')) {
     db.exec("ALTER TABLE messages ADD COLUMN submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form', 'api', 'unknown'))");
   }
-  if (!db.prepare("SELECT sql FROM sqlite_master WHERE name='messages'").get().sql.includes("'session_get'")) {
+  if (!db.prepare("SELECT sql FROM sqlite_master WHERE name='messages'").get().sql.includes("'ouija_get'")) {
     // SQLite cannot alter a CHECK constraint. Preserve IDs and sequence in a transaction.
     db.exec(`BEGIN IMMEDIATE;
-      CREATE TABLE messages_v11 (
+      CREATE TABLE messages_v12 (
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
         agent_name TEXT NOT NULL CHECK(length(agent_name) BETWEEN 1 AND 80),
         message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 2000), timestamp TEXT NOT NULL,
-        submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form','api','unknown','session_get'))
+        submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form','api','unknown','session_get','ouija_get'))
       );
-      INSERT INTO messages_v11 SELECT sequence,id,agent_name,message,timestamp,submission_method FROM messages;
+      INSERT INTO messages_v12 SELECT sequence,id,agent_name,message,timestamp,submission_method FROM messages;
       DROP TABLE messages;
-      ALTER TABLE messages_v11 RENAME TO messages;
+      ALTER TABLE messages_v12 RENAME TO messages;
       COMMIT;`);
   }
   db.exec('CREATE TABLE IF NOT EXISTS experimental_sessions (key TEXT PRIMARY KEY, value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1)');
@@ -47,7 +47,7 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       create: (key, value) => sessionCreate.run(key, JSON.stringify(value)).changes === 1,
       swap: (key, value, etag) => sessionSwap.run(JSON.stringify(value), key, etag).changes === 1,
       remove: key => db.prepare('DELETE FROM experimental_sessions WHERE key=?').run(key),
-      async *keys() { for (const row of db.prepare('SELECT key FROM experimental_sessions').all()) yield row.key; }
+      async *keys() { for (const row of db.prepare('SELECT key FROM experimental_sessions LIMIT 100').all()) yield row.key; }
     },
     putIfAbsent(record) {
       insertOnce.run(record.id, record.agent_name, record.message, record.timestamp, record.submission_method);

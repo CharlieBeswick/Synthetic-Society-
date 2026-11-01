@@ -1,4 +1,5 @@
 import { randomBytes, randomInt, randomUUID, createHash, timingSafeEqual } from 'node:crypto';
+import { cleanupSessions } from './session-cleanup.js';
 import { validMessage, validationError } from './validation.js';
 
 const duration = 15 * 60_000;
@@ -25,19 +26,7 @@ export function createSessions(backend, messages, { now = Date.now, chooseSlot =
     if (!credential(editToken) || !timingSafeEqual(Buffer.from(value.edit_hash, 'hex'), Buffer.from(hash(editToken), 'hex'))) fail(403, 'Invalid draft-edit credential.');
   }
   const status = value => ({ slot: value.slot, state: value.state, revision: value.revision, expires_at: new Date(value.expires_at).toISOString(), ready: value.state === 'draft-ready' });
-  async function cleanup() {
-    let removed = 0;
-    for await (const key of backend.keys()) {
-      const entry = await backend.read(key);
-      if (!entry || entry.value.expires_at > now()) continue;
-      // A tombstone prevents a concurrent save from extending a deleted session.
-      if (entry.value.state === 'expired' || await backend.swap(key, { state: 'expired', expires_at: entry.value.expires_at }, entry.etag)) {
-        await backend.remove(key);
-        if (++removed >= 25) break;
-      }
-    }
-    return removed;
-  }
+  const cleanup = () => cleanupSessions(backend, now);
   async function finish(key, entry) {
     // A single atomic insert protects against duplicate GETs across instances.
     const record = await messages.putIfAbsent(entry.value.record);

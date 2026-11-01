@@ -1,0 +1,245 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { createHash } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { openStore } from '../src/db.js';
+import { createApp } from '../src/app.js';
+import { createOuija, decodeCharacter, aliases } from '../src/ouija.js';
+import { createSessions } from '../src/sessions.js';
+
+async function fixture(t, options = {}) {
+  const store = openStore(':memory:');
+  const server = createApp(store, { submissionLimit: 100, generalLimit: 1000, ...options }).listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); store.close(); });
+  const base = `http://127.0.0.1:${server.address().port}`;
+  return { store, get: (path, options) => fetch(base + path, options) };
+}
+const tokenFrom = html => html.match(/id="ouija-capability">([0-9a-f]{64})</)?.[1];
+const idFrom = html => html.match(/id="message-id">([^<]+)</)?.[1];
+async function start(get) {
+  const response = await get('/ouija/start');
+  assert.equal(response.status, 201);
+  assert.match(response.headers.get('cache-control'), /no-store/);
+  assert.match(response.headers.get('x-robots-tag'), /noindex/);
+  assert.equal(response.headers.get('set-cookie'), null);
+  const html = await response.text();
+  assert.doesNotMatch(html, /<script|<link|<img|<iframe/);
+  const token = tokenFrom(html);
+  assert.ok(token);
+  return token;
+}
+async function spell(get, token, buffer, text) {
+  for (let i = 0; i < text.length; i++) {
+    const response = await get(`/ouija/${token}/${buffer}/${i + 1}/x${text.charCodeAt(i).toString(16).padStart(2, '0')}`);
+    assert.equal(response.status, 200);
+    await response.text();
+  }
+}
+
+test('fresh client composes, publishes and verifies using GET only without headers or cookies', async t => {
+  const { get, store } = await fixture(t);
+  const landing = await get('/ouija');
+  assert.equal(landing.status, 200);
+  assert.match(await landing.text(), /GET-Only AI Communication/);
+  const token = await start(get);
+  await spell(get, token, 'name', 'ChatGPT');
+  await spell(get, token, 'char', 'Hello from Ouija!');
+  const status = await (await get(`/ouija/${token}/status.json`)).json();
+  assert.equal(status.agent_name, 'ChatGPT');
+  assert.equal(status.message, 'Hello from Ouija!');
+  assert.equal(status.can_submit, true);
+  const reply = await get(`/ouija/${token}/submit`);
+  assert.equal(reply.status, 200);
+  const html = await reply.text();
+  assert.match(html, /Ouija Submission Successful/);
+  assert.ok(!html.includes(token));
+  const id = idFrom(html);
+  const saved = await (await get(`/api/messages/${id}`)).json();
+  assert.equal(saved.message.agent_name, 'ChatGPT');
+  assert.equal(saved.message.message, 'Hello from Ouija!');
+  assert.equal(saved.message.submission_method, 'ouija_get');
+  assert.match(await (await get('/results')).text(), /ouija_get/);
+  assert.equal(idFrom(await (await get(`/ouija/${token}/submit`)).text()), id);
+  assert.equal(store.recent().length, 1);
+  assert.ok(!(await (await get('/api/messages')).text()).includes(token));
+});
+
+test('case-safe ASCII encoding, all aliases, and unsupported symbols', () => {
+  for (const c of 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789') {
+    assert.equal(decodeCharacter(c), c);
+    assert.equal(decodeCharacter('x' + c.charCodeAt(0).toString(16)), c);
+  }
+  assert.equal(decodeCharacter('x41'), 'A'); assert.equal(decodeCharacter('x61'), 'a');
+  for (const [alias, value] of Object.entries(aliases)) {
+    assert.equal(decodeCharacter(alias), value);
+    assert.equal(decodeCharacter('x' + value.charCodeAt(0).toString(16).padStart(2, '0')), value);
+  }
+  for (const value of ['Hello', '.', 'x00', 'x09', 'x2f', 'x3c', 'x7f', 'xFF', 'é', 'u1f600', '', 'constructor', '__proto__']) assert.throws(() => decodeCharacter(value), /Unsupported/);
+});
+
+test('out-of-order writes reconstruct by position; duplicates are acknowledged and conflicts rejected', async t => {
+  const { get } = await fixture(t);
+  const token = await start(get);
+  await spell(get, token, 'name', 'AI');
+  for (const [position, character] of [[3, 'exclamation'], [1, 'H']]) assert.equal((await get(`/ouija/${token}/char/${position}/${character}`)).status, 200);
+  const incomplete = await (await get(`/ouija/${token}/status.json`)).json();
+  assert.deepEqual(incomplete.message_buffer.missing, [2]);
+  assert.equal(incomplete.message, 'H□!');
+  assert.equal((await get(`/ouija/${token}/submit`)).status, 409);
+  await get(`/ouija/${token}/char/2/i`);
+  const duplicate = await (await get(`/ouija/${token}/char/2/i`)).text();
+  assert.match(duplicate, /Already recorded; no change/);
+  assert.equal((await get(`/ouija/${token}/char/2/x`)).status, 409);
+  assert.equal((await get(`/ouija/${token}/name/1/B`)).status, 409);
+  assert.equal((await (await get(`/ouija/${token}/status.json`)).json()).message, 'Hi!');
+  await get(`/ouija/${token}/submit`);
+  assert.equal((await get(`/ouija/${token}/char/4/x`)).status, 409);
+  assert.equal((await get(`/ouija/${token}/char/2/i`)).status, 200);
+});
+
+test('position bounds, empty buffers and missing name characters reject submission', async t => {
+  const { get } = await fixture(t);
+  const token = await start(get);
+  assert.equal((await get(`/ouija/${token}/submit`)).status, 400);
+  for (const position of ['0', '-1', '01', '1.5', '1e2', '2001', '99999999999', '__proto__']) assert.equal((await get(`/ouija/${token}/char/${position}/a`)).status, 400);
+  assert.equal((await get(`/ouija/${token}/name/81/a`)).status, 400);
+  await get(`/ouija/${token}/char/1/H`);
+  assert.equal((await get(`/ouija/${token}/submit`)).status, 400);
+  await get(`/ouija/${token}/name/2/I`);
+  assert.equal((await get(`/ouija/${token}/submit`)).status, 409);
+  await get(`/ouija/${token}/name/1/A`);
+  assert.equal((await get(`/ouija/${token}/submit`)).status, 200);
+  const other = await start(get);
+  await get(`/ouija/${other}/name/1/A`);
+  assert.equal((await get(`/ouija/${other}/submit`)).status, 400);
+  await get(`/ouija/${other}/char/1/space`);
+  assert.equal((await get(`/ouija/${other}/submit`)).status, 400);
+});
+
+test('status is read-only, duplicates do not extend expiry, and expired credentials are rejected', async t => {
+  let now = 1800000000000;
+  const { get, store } = await fixture(t, { sessionNow: () => now });
+  const token = await start(get);
+  const key = 'ouija-' + createHash('sha256').update(token).digest('hex');
+  await get(`/ouija/${token}/char/1/A`);
+  const before = store.sessions.read(key);
+  now += 1000;
+  await get(`/ouija/${token}/status`); await get(`/ouija/${token}/status.json`); await get(`/ouija/${token}/char/1/A`);
+  assert.deepEqual(store.sessions.read(key), before);
+  now += 15 * 60_000;
+  for (const suffix of ['status', 'char/2/a', 'submit']) assert.equal((await get(`/ouija/${token}/${suffix}`)).status, 410);
+  assert.equal((await get('/ouija/not-a-token/status')).status, 403);
+  await start(get);
+  assert.equal(store.sessions.read(key), null);
+});
+
+test('multiple simultaneous sessions and Phase 1.1 capabilities remain isolated', async t => {
+  const { get, store } = await fixture(t);
+  const tokens = await Promise.all(Array.from({ length: 3 }, () => start(get)));
+  assert.equal(new Set(tokens).size, 3);
+  await Promise.all(tokens.map(async (token, i) => { await spell(get, token, 'name', `Agent${i}`); await spell(get, token, 'char', `Text${i}`); }));
+  for (let i = 0; i < 3; i++) assert.equal((await (await get(`/ouija/${tokens[i]}/status.json`)).json()).message, `Text${i}`);
+  const paired = createSessions(store.sessions, store);
+  const pairedSession = await paired.create();
+  assert.equal((await get(`/ouija/${pairedSession.token}/status`)).status, 403);
+  await assert.rejects(paired.submit(tokens[0], { revision: 1 }), /Invalid/);
+});
+
+test('concurrent characters and final requests preserve characters and one permanent record', async () => {
+  const store = openStore(':memory:');
+  try {
+    const workers = Array.from({ length: 6 }, () => createOuija(store.sessions, store));
+    const { token } = await workers[0].start();
+    await workers[0].write(token, 'name', 1, 'A');
+    await Promise.all(workers.map((worker, i) => worker.write(token, 'message', i + 1, String(i))));
+    assert.equal((await workers[0].status(token)).message, '012345');
+    const receipts = await Promise.all(workers.map(worker => worker.submit(token)));
+    assert.equal(new Set(receipts.map(row => row.id)).size, 1);
+    assert.equal(store.recent().length, 1);
+  } finally { store.close(); }
+});
+
+test('HEAD and recognised previews never allocate, write or submit', async t => {
+  const { get, store } = await fixture(t);
+  assert.equal((await get('/ouija/start', { method: 'HEAD' })).status, 405);
+  const mixedCaseHead = await get('/OUIJA/START', { method: 'HEAD' });
+  assert.equal(mixedCaseHead.status, 405);
+  assert.match(mixedCaseHead.headers.get('cache-control'), /private/);
+  assert.match(mixedCaseHead.headers.get('x-robots-tag'), /noindex/);
+  for (const headers of [{ Purpose: 'prefetch' }, { 'Sec-Purpose': 'prerender' }, { 'X-Purpose': 'preview' }]) assert.equal((await get('/ouija/start', { headers })).status, 400);
+  const keys = []; for await (const key of store.sessions.keys()) keys.push(key);
+  assert.equal(keys.length, 0);
+  const token = await start(get);
+  for (const suffix of ['char/1/H', 'name/1/A', 'submit', 'status']) assert.equal((await get(`/ouija/${token}/${suffix}`, { method: 'HEAD' })).status, 405);
+  for (const suffix of ['char/1/H', 'name/1/A', 'submit']) assert.equal((await get(`/ouija/${token}/${suffix}`, { headers: { Purpose: 'prefetch' } })).status, 400);
+  assert.equal((await (await get(`/ouija/${token}/status.json`)).json()).recorded_character_count, 0);
+  assert.equal(store.recent().length, 0);
+});
+
+test('max length is accepted; whitespace is preserved; oversized positions are rejected', async () => {
+  const store = openStore(':memory:');
+  try {
+    const service = createOuija(store.sessions, store);
+    const { token } = await service.start();
+    for (let i = 1; i <= 80; i++) await service.write(token, 'name', i, 'N');
+    for (let i = 1; i <= 2000; i++) await service.write(token, 'message', i, i === 1 ? 'space' : i === 2000 ? 'newline' : 'a');
+    await assert.rejects(service.write(token, 'name', 81, 'a'), /1 to 80/);
+    await assert.rejects(service.write(token, 'message', 2001, 'a'), /1 to 2000/);
+    const row = await service.submit(token);
+    assert.equal(row.agent_name.length, 80); assert.equal(row.message.length, 2000);
+    assert.equal(row.message, ' ' + 'a'.repeat(1998) + '\n');
+  } finally { store.close(); }
+});
+
+test('failure after permanent write is recoverable and retries retain one record', async () => {
+  const store = openStore(':memory:');
+  try {
+    let failing = true;
+    const service = createOuija(store.sessions, { putIfAbsent(record) { const row = store.putIfAbsent(record); if (failing) throw new Error('lost response'); return row; } });
+    const { token } = await service.start();
+    await service.write(token, 'name', 1, 'A'); await service.write(token, 'message', 1, 'B');
+    await assert.rejects(service.submit(token), /lost response/);
+    const status = await service.status(token);
+    assert.equal(status.state, 'submitting'); assert.ok(status.recovery_id);
+    failing = false;
+    assert.equal((await service.submit(token)).id, status.recovery_id);
+    assert.equal(store.recent().length, 1);
+  } finally { store.close(); }
+});
+
+test('storage failure and bounded session creation return clear errors', async t => {
+  const broken = await fixture(t, { sessionBackend: { async *keys() { throw new Error('private details'); } } });
+  const response = await broken.get('/ouija/start');
+  assert.equal(response.status, 500); assert.doesNotMatch(await response.text(), /private details/);
+  const normal = await fixture(t);
+  for (let i = 0; i < 20; i++) await start(normal.get);
+  const limited = await normal.get('/ouija/start');
+  assert.equal(limited.status, 429); assert.ok(limited.headers.get('retry-after'));
+  assert.match(limited.headers.get('x-robots-tag'), /noindex/);
+});
+
+test('SQLite migration preserves Phase 1.1 records and Ouija sessions survive reopening', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ouija-migration-'));
+  const path = join(dir, 'db.sqlite');
+  const legacy = new DatabaseSync(path);
+  legacy.exec("CREATE TABLE messages(sequence INTEGER PRIMARY KEY AUTOINCREMENT,id TEXT NOT NULL UNIQUE,agent_name TEXT NOT NULL,message TEXT NOT NULL,timestamp TEXT NOT NULL,submission_method TEXT NOT NULL CHECK(submission_method IN ('form','api','session_get','unknown'))); INSERT INTO messages(id,agent_name,message,timestamp,submission_method) VALUES('legacy','Old','Preserved','2026-10-31T00:00:00.000Z','session_get');");
+  legacy.close();
+  let store = openStore(path);
+  try {
+    assert.equal(store.get('legacy').message, 'Preserved');
+    let service = createOuija(store.sessions, store);
+    const { token } = await service.start();
+    await service.write(token, 'name', 1, 'A'); await service.write(token, 'message', 1, 'Z');
+    store.close(); store = openStore(path); service = createOuija(store.sessions, store);
+    const row = await service.submit(token);
+    store.close(); store = openStore(path);
+    assert.equal(store.get(row.id).submission_method, 'ouija_get');
+    assert.equal(store.get('legacy').submission_method, 'session_get');
+    assert.equal((await createOuija(store.sessions, store).submit(token)).id, row.id);
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});

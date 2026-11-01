@@ -56,6 +56,23 @@ test('actual modern function wrapper and official SDK persist against local Blob
   const freshSessionResponse = await freshHandler(new Request('https://sdk-test.example' + trigger, { headers: { Accept: 'application/json' } }), context);
   assert.equal((await freshSessionResponse.json()).id, receipts[0].id);
   assert.equal((await (await request('/api/messages')).json()).messages.length, 3);
+  const started = await request('/.netlify/functions/app/ouija/start');
+  const capability = (await started.text()).match(/id="ouija-capability">([a-f0-9]{64})/)[1];
+  for (const [buffer, text] of [['name', 'AI'], ['char', 'Aa!']]) {
+    for (let i = 0; i < text.length; i++) {
+      const symbol = text[i] === '!' ? 'exclamation' : text[i];
+      assert.equal((await request(`/.netlify/functions/app/ouija/${capability}/${buffer}/${i + 1}/${symbol}`)).status, 200);
+    }
+  }
+  const ouijaPath = `/ouija/${capability}/submit`;
+  const ouijaReceipt = await freshHandler(new Request('https://sdk-test.example' + ouijaPath), context);
+  assert.equal(ouijaReceipt.status, 200);
+  const ouijaId = (await ouijaReceipt.text()).match(/id="message-id">([^<]+)/)[1];
+  const ouijaRecord = (await (await request('/api/messages/' + ouijaId)).json()).message;
+  assert.equal(ouijaRecord.message, 'Aa!');
+  assert.equal(ouijaRecord.submission_method, 'ouija_get');
+  assert.match(await (await request(ouijaPath)).text(), new RegExp(ouijaId));
+  assert.equal((await (await request('/api/messages')).json()).messages.length, 4);
   // Changing forwarding headers must not evade the instance's submission limit.
   for (let i = 0; i < 21; i++) {
     const response = await deployedHandler(new Request('https://sdk-test.example/api/messages', {

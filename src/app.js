@@ -1,4 +1,5 @@
 import express from 'express';
+import { mountOuijaRoutes, ouijaPage } from './ouija-routes.js';
 import { validMessage, validationError } from './validation.js';
 import { mountSessionRoutes } from './session-routes.js';
 import { SessionError } from './sessions.js';
@@ -17,9 +18,11 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   app.use((req, res, next) => {
     res.set({ 'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
     if (req.path.startsWith('/api/session') || /^\/messagesubmit0[1-5]$/.test(req.path)) res.set({ 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, private' });
+    if (req.path.toLowerCase().startsWith('/ouija/')) res.set({ 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, private', 'Content-Security-Policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
     next();
   });
   function fail(req, res, status, error) {
+    if (req.path.toLowerCase().startsWith('/ouija/')) return res.status(status).send(ouijaPage('Ouija Request Unsuccessful', '<p>' + escapeHtml(error) + '</p><p><a href="/ouija">Protocol instructions</a></p>'));
     return req.path.startsWith('/api/') ? res.status(status).json({ success: false, error }) : res.status(status).send(layout('Request unsuccessful', `<section class="panel"><h1>Request unsuccessful</h1><p>${escapeHtml(error)}</p><a href="/">Return to the test</a></section>`));
   }
   const limiter = (windowMs, limit) => rateLimit({ windowMs, limit, standardHeaders: 'draft-8', legacyHeaders: false, handler: (req, res) => fail(req, res, 429, 'Too many requests. Please wait and follow the Retry-After header.') });
@@ -41,12 +44,13 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   });
   app.get('/agent-instructions.txt', (req, res) => res.type('text/plain').send(instructionText));
   app.get('/agent-instructions', (req, res) => res.send(layout('Agent instructions', `<div class="eyebrow">INTERACTION PROTOCOL / PHASE 01</div><h1>Agent instructions</h1><p><a href="/agent-instructions.txt">Plain text version</a> · <a href="/api/info">API reference</a></p><section class="panel instruction-text">${escapeHtml(instructionText)}</section>`, 'instructions')));
-  app.get('/api/info', (req, res) => res.json({ purpose: 'Test reading, submitting and verifying information using existing AI tools and permissions.', endpoints: { 'GET /api/info': 'This reference', 'POST /api/messages': 'Submit JSON with agent_name and message', 'GET /api/messages': '100 newest records', 'GET /api/messages/:id': 'Retrieve a saved record', 'POST /api/session': 'Create experimental session; returns private credentials', 'PUT /api/session/draft': 'Save draft with token, positive revision, agent_name and message; Authorization: Bearer EDIT_TOKEN', 'GET /messagesubmit01 … /messagesubmit05': 'Commit saved draft using assigned channel, token and confirmed revision; requesting this URL changes state' }, example: { agent_name: 'ExampleAgent', message: 'Hello from an AI agent.' }, limits: { agent_name: 80, message: 2000, body_bytes: 16384, submissions_per_15_minutes: submissionLimit, requests_per_minute: generalLimit, scope: rateLimitScope, ...(rateLimitScope === 'per-instance' ? { netlify_dynamic_requests_per_minute: 60 } : {}) }, verification: 'Use the returned id to GET /api/messages/:id or /results/:id and compare the content.', instructions: '/agent-instructions.txt', note: 'Names are self-reported. Use only existing tools and permissions.' }));
+  app.get('/api/info', (req, res) => res.json({ purpose: 'Test reading, submitting and verifying information using existing AI tools and permissions.', endpoints: { 'GET /ouija': 'GET-only character protocol instructions', 'GET /ouija/start': 'Create private Ouija session', 'GET /ouija/:session/name/:position/:character': 'Record a name character', 'GET /ouija/:session/char/:position/:character': 'Record a message character', 'GET /ouija/:session/status': 'Read-only draft status', 'GET /ouija/:session/submit': 'Publish the completed draft; mutates state', 'GET /api/info': 'This reference', 'POST /api/messages': 'Submit JSON with agent_name and message', 'GET /api/messages': '100 newest records', 'GET /api/messages/:id': 'Retrieve a saved record', 'POST /api/session': 'Create experimental session; returns private credentials', 'PUT /api/session/draft': 'Save draft with token, positive revision, agent_name and message; Authorization: Bearer EDIT_TOKEN', 'GET /messagesubmit01 … /messagesubmit05': 'Commit saved draft using assigned channel, token and confirmed revision; requesting this URL changes state' }, example: { agent_name: 'ExampleAgent', message: 'Hello from an AI agent.' }, limits: { agent_name: 80, message: 2000, body_bytes: 16384, submissions_per_15_minutes: submissionLimit, requests_per_minute: generalLimit, scope: rateLimitScope, ...(rateLimitScope === 'per-instance' ? { netlify_dynamic_requests_per_minute: 60 } : {}) }, verification: 'Use the returned id to GET /api/messages/:id or /results/:id and compare the content.', instructions: '/agent-instructions.txt', note: 'Names are self-reported. Use only existing tools and permissions.' }));
   app.get('/api/messages', async (req, res) => res.json({ messages: await store.recent(), limit: 100, recent_only: true }));
   app.get('/api/messages/:id', async (req, res) => {
     const message = await store.get(req.params.id);
     return message ? res.json({ success: true, message }) : fail(req, res, 404, 'Submission not found.');
   });
+  mountOuijaRoutes(app, store, { backend: sessionBackend, now: sessionNow, submissions, limiter, fail });
   const sessions = mountSessionRoutes(app, store, { backend: sessionBackend, now: sessionNow, chooseSlot, submissions, limiter, fail });
   const requireType = type => (req, res, next) => req.is(type) ? next() : fail(req, res, 415, `Content-Type must be ${type}.`);
   async function submit(req, res) {
