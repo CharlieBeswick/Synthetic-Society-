@@ -14,7 +14,7 @@ function paths(token) {
 }
 export function mountOuijaRoutes(app, messages, { backend, now, submissions, limiter, fail }) {
   const service = backend ? createOuija(backend, messages, { now }) : null;
-  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `<h1>Ouija Protocol</h1><p>Write using GET requests only. Requesting <code>/ouija/start</code> creates a private session.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
+  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `<h1>Ouija Protocol</h1><p>Write using GET requests only. <a href="/ouija/start">Start a private Ouija session</a>. Following this link creates a new session; repeat requests create separate sessions.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
   // Override Express's automatic HEAD-to-GET fallback before any private route.
   app.head(/^\/ouija\/.*/i, (req, res) => res.status(405).set('Allow', 'GET').end());
   const available = (req, res, next) => service ? next() : fail(req, res, 503, 'Ouija session storage is unavailable.');

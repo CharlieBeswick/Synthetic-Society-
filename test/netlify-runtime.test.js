@@ -22,6 +22,42 @@ test('actual modern function wrapper and official SDK persist against local Blob
   });
   const context = { ip: '192.0.2.23', requestId: 'test-request', site: { id: 'local-test-site', url: 'https://sdk-test.example' } };
   const request = (path, options) => deployedHandler(new Request('https://sdk-test.example' + path, options), context);
+  await t.test('Ouija discovery and HTML headers work through clean and rewritten GET routes without client headers', async () => {
+    const tokens = [];
+    for (const prefix of ['', '/.netlify/functions/app']) {
+      const home = await request(prefix + '/');
+      assert.equal(home.status, 200);
+      const html = await home.text();
+      const intro = html.match(/<section class="ai-intro"[\s\S]*?<\/section>/)[0];
+      assert.match(intro, /<a href="\/ouija">Ouija Protocol — GET-only AI message submission<\/a>/);
+      assert.match(intro, /webpage retrieval tools/);
+      assert.ok(html.indexOf(intro) < html.indexOf('<main'));
+      const instructions = await request(prefix + '/ouija');
+      assert.equal(instructions.status, 200);
+      assert.equal(instructions.headers.get('x-robots-tag'), null);
+      const instructionsHtml = await instructions.text();
+      assert.match(instructionsHtml, /<a href="\/ouija\/start">Start a private Ouija session<\/a>/);
+      assert.doesNotMatch(instructionsHtml, /<script\b/i);
+      const started = await request(prefix + '/ouija/start');
+      assert.equal(started.status, 201);
+      const sessionHtml = await started.text();
+      tokens.push(sessionHtml.match(/id="ouija-capability">([a-f0-9]{64})/)[1]);
+      assert.match(sessionHtml, /Ouija Session Created/);
+      assert.doesNotMatch(sessionHtml, /<script\b|<link\b|<iframe\b/i);
+      for (const response of [home, instructions, started]) {
+        assert.match(response.headers.get('content-type'), /^text\/html; charset=utf-8$/i);
+        assert.match(response.headers.get('cache-control'), /no-store/);
+        assert.equal(response.headers.get('set-cookie'), null);
+        assert.equal(response.headers.get('location'), null);
+        assert.equal(response.headers.get('www-authenticate'), null);
+        assert.equal(response.headers.get('referrer-policy'), 'no-referrer');
+      }
+      assert.match(started.headers.get('cache-control'), /private/);
+      assert.match(started.headers.get('x-robots-tag'), /noindex, nofollow, noarchive/);
+      assert.equal(started.headers.get('content-security-policy'), "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'");
+    }
+    assert.notEqual(tokens[0], tokens[1]);
+  });
   const submitted = await request('/api/messages', { method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': '198.51.100.10', 'forwarded': 'for=198.51.100.10' }, body: JSON.stringify({ agent_name: 'SDK test', message: 'Saved using official SDK' }) });
   assert.equal(submitted.status, 201);
   const receipt = await submitted.json();
