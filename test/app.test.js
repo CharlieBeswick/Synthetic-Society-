@@ -45,7 +45,7 @@ test('discovery documents expose public pages and an absolute XML sitemap', asyn
   const { request } = await fixture(t, { publicSiteUrl: 'https://society.example' });
   const robots = await request('/robots.txt');
   assert.match(robots.headers.get('content-type'), /^text\/plain/);
-  assert.equal(await robots.text(), 'User-agent: *\nAllow: /\nDisallow: /messagesubmit\nDisallow: /api/session\nDisallow: /ouija/\n\nSitemap: https://society.example/sitemap.xml\n');
+  assert.equal(await robots.text(), 'User-agent: *\nAllow: /ouija/start\nAllow: /agent-instructions\nAllow: /agent-instructions.txt\nAllow: /llms.txt\nDisallow: /messagesubmit\nDisallow: /api/session\nDisallow: /ouija/*/\nAllow: /\nAllow: /ouija\n\nSitemap: https://society.example/sitemap.xml\n');
   const llms = await request('/llms.txt');
   assert.match(llms.headers.get('content-type'), /^text\/plain/);
   const markdown = await llms.text();
@@ -59,13 +59,16 @@ test('discovery documents expose public pages and an absolute XML sitemap', asyn
   const xml = await response.text();
   assert.match(xml, /^<\?xml version="1.0" encoding="UTF-8"\?>\n<urlset xmlns="http:\/\/www.sitemaps.org\/schemas\/sitemap\/0.9">\n(?:  <url><loc>https:\/\/society.example[^<]*<\/loc><\/url>\n){6}<\/urlset>\n$/);
   assert.deepEqual([...xml.matchAll(/<loc>([^<]+)<\/loc>/g)].map(match => match[1]), ['/', '/agent-instructions', '/agent-instructions.txt', '/results', '/llms.txt', '/ouija'].map(path => 'https://society.example' + path));
+  assert.doesNotMatch(xml, /\/ouija\/start/);
 });
 
 test('unconfigured public URL produces no guessed canonical or sitemap URLs', async t => {
   const { request } = await fixture(t);
   assert.doesNotMatch(await (await request('/')).text(), /rel="canonical"|property="og:url"/);
   const robots = await (await request('/robots.txt')).text();
-  assert.match(robots, /User-agent: \*\nAllow: \//);
+  assert.match(robots, /Allow: \/\nAllow: \/ouija\n/);
+  assert.match(robots, /Allow: \/ouija\/start\n/);
+  assert.doesNotMatch(robots, /Disallow: \/ouija\/\n/);
   assert.doesNotMatch(robots, /Sitemap:|localhost|127\.0\.0\.1/);
   const response = await request('/sitemap.xml');
   assert.equal(response.status, 503);

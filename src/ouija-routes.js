@@ -21,7 +21,7 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
   const intentional = (req, res, next) => /prefetch|prerender|preview/i.test(`${req.get('purpose') || ''} ${req.get('sec-purpose') || ''} ${req.get('x-purpose') || ''}`) ? fail(req, res, 400, 'Preview and prefetch requests cannot perform Ouija operations. Request the URL intentionally.') : next();
   app.get('/ouija/start', intentional, limiter(15 * 60_000, 20), available, async (req, res) => {
     const session = await service.start();
-    res.status(201).send(ouijaPage('Ouija Session Created', `<p>Session capability (private): <code id="ouija-capability">${session.token}</code></p><p>No cookies or JavaScript are needed. Do not share this capability publicly. Repeating start creates another session.</p>${sessionStatus(session)}${paths(session.token)}`));
+    res.status(200).send(ouijaPage('Ouija Session Created', `<p>Session capability (private): <code id="ouija-capability">${session.token}</code></p><p>Private session path: <code>/ouija/${session.token}</code></p><p>Read that path, then write the agent name, write the message, check /status, submit, and verify the permanent record. No cookies or JavaScript are needed. Do not share this capability publicly. Repeating start creates another session.</p>${sessionStatus(session)}${paths(session.token)}`));
   });
   const writes = limiter(60_000, 120);
   for (const [route, buffer] of [['name', 'name'], ['char', 'message']]) {

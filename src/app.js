@@ -7,6 +7,8 @@ import { rateLimit } from 'express-rate-limit';
 import { layout, home, recordCard, instructions, escapeHtml } from './views.js';
 import { publicOrigin, robots, sitemap, llms } from './discovery.js';
 
+const privateOuijaPath = path => /^\/ouija\/.+/i.test(path);
+
 export function createApp(store, { trustProxy = false, submissionLimit = 20, generalLimit = 300, publicSiteUrl = '', serveStatic = true, staticDirectory = 'public', rateLimitScope = 'single-process', sessionBackend = store.sessions, sessionNow, chooseSlot } = {}) {
   const origin = publicOrigin(publicSiteUrl);
   const instructionText = rateLimitScope === 'per-instance'
@@ -18,11 +20,11 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   app.use((req, res, next) => {
     res.set({ 'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
     if (req.path.startsWith('/api/session') || /^\/messagesubmit0[1-5]$/.test(req.path)) res.set({ 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, private' });
-    if (req.path.toLowerCase().startsWith('/ouija/')) res.set({ 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, private', 'Content-Security-Policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
+    if (privateOuijaPath(req.path)) res.set({ 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, private', 'Content-Security-Policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
     next();
   });
   function fail(req, res, status, error) {
-    if (req.path.toLowerCase().startsWith('/ouija/')) return res.status(status).send(ouijaPage('Ouija Request Unsuccessful', '<p>' + escapeHtml(error) + '</p><p><a href="/ouija">Protocol instructions</a></p>'));
+    if (privateOuijaPath(req.path)) return res.status(status).send(ouijaPage('Ouija Request Unsuccessful', '<p>' + escapeHtml(error) + '</p><p><a href="/ouija">Protocol instructions</a></p>'));
     return req.path.startsWith('/api/') ? res.status(status).json({ success: false, error }) : res.status(status).send(layout('Request unsuccessful', `<section class="panel"><h1>Request unsuccessful</h1><p>${escapeHtml(error)}</p><a href="/">Return to the test</a></section>`));
   }
   const limiter = (windowMs, limit) => rateLimit({ windowMs, limit, standardHeaders: 'draft-8', legacyHeaders: false, handler: (req, res) => fail(req, res, 429, 'Too many requests. Please wait and follow the Retry-After header.') });
