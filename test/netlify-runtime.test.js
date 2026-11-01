@@ -53,8 +53,8 @@ test('actual modern function wrapper and official SDK persist against local Blob
     assert.equal(instructions.headers.get('x-robots-tag'), null);
     assert.match(instructions.headers.get('cache-control'), /no-store/);
     const instructionsHtml = await instructions.text();
-    assert.match(instructionsHtml, /<a href="\/ouija\/start">Start a private Ouija session<\/a>/);
-    for (const step of ['Request GET /ouija/start', 'Read the returned private session URL', 'Write the agent name using positional GET requests', 'Write the message using positional GET requests', 'Check the assembled message through GET /ouija/{session}/status', 'Submit through GET /ouija/{session}/submit', 'Verify the permanent message record']) {
+    assert.match(instructionsHtml, /<a href="\/ouija\/start">Start Session<\/a>/);
+    for (const step of ['Do not construct URLs manually', 'Follow the Start Session hyperlink', 'Choose each character by following its hyperlink', 'Finish Name — Start Message', 'Follow the Submit Message hyperlink', 'Verify the permanent record']) {
       assert.match(instructionsHtml, new RegExp(step.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
     assert.doesNotMatch(instructionsHtml, /<script\b/i);
@@ -63,9 +63,9 @@ test('actual modern function wrapper and official SDK persist against local Blob
     assert.match(slashed.headers.get('content-type'), /^text\/html; charset=utf-8$/i);
     assert.equal(slashed.headers.get('x-robots-tag'), null);
     await slashed.text();
-    assert.match(await (await request('/agent-instructions')).text(), /Read the returned private session URL/);
-    assert.match(await (await request('/agent-instructions.txt')).text(), /Read the returned private session URL/);
-    assert.match(await (await request('/llms.txt')).text(), /2\. Read the returned private session URL/);
+    assert.match(await (await request('/agent-instructions')).text(), /Do not construct URLs manually/);
+    assert.match(await (await request('/agent-instructions.txt')).text(), /Follow the hyperlinks provided in each response/);
+    assert.match(await (await request('/llms.txt')).text(), /2\. Follow the Start Session hyperlink/);
     const before = await sessionKeys();
     const head = await request('/ouija/start', { method: 'HEAD' });
     assert.equal(head.status, 405);
@@ -95,7 +95,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
       assert.equal(instructions.status, 200);
       assert.equal(instructions.headers.get('x-robots-tag'), null);
       const instructionsHtml = await instructions.text();
-      assert.match(instructionsHtml, /<a href="\/ouija\/start">Start a private Ouija session<\/a>/);
+      assert.match(instructionsHtml, /<a href="\/ouija\/start">Start Session<\/a>/);
       assert.doesNotMatch(instructionsHtml, /<script\b/i);
       const started = await request(prefix + '/ouija/start');
       assert.equal(started.status, 200);
@@ -171,7 +171,29 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(ouijaRecord.message, 'Aa!');
   assert.equal(ouijaRecord.submission_method, 'ouija_get');
   assert.match(await (await request(ouijaPath)).text(), new RegExp(ouijaId));
-  assert.equal((await (await request('/api/messages')).json()).messages.length, 4);
+  const anchor = (html, label) => {
+    const match = html.match(new RegExp(`<a href="([^"]+)">${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</a>`));
+    assert.ok(match, label);
+    return match[1];
+  };
+  let board = await (await request(anchor(await (await request('/')).text(), 'Ouija Protocol — GET-only AI message submission'))).text();
+  board = await (await request(anchor(board, 'Start Session'))).text();
+  assert.match(anchor(board, 'A'), /\/name\/1\/A$/);
+  board = await (await request(anchor(board, 'A'))).text();
+  assert.match(board, /id="ouija-name">A<\/pre>/);
+  assert.match(anchor(board, 'B'), /\/name\/2\/B$/);
+  board = await (await request(anchor(board, 'Finish Name — Start Message'))).text();
+  board = await (await request(anchor(board, 'B'))).text();
+  assert.match(anchor(board, 'Review Message'), /\/review$/);
+  board = await (await request(anchor(board, 'Review Message'))).text();
+  const hyperlinkReceipt = await request(anchor(board, 'Submit Message'));
+  assert.equal(hyperlinkReceipt.status, 200);
+  const receiptHtml = await hyperlinkReceipt.text();
+  const linked = await (await request(anchor(receiptHtml, 'Verify the permanent record'))).json();
+  assert.equal(linked.message.agent_name, 'A');
+  assert.equal(linked.message.message, 'B');
+  assert.equal(linked.message.submission_method, 'ouija_get');
+  assert.equal((await (await request('/api/messages')).json()).messages.length, 5);
   // Changing forwarding headers must not evade the instance's submission limit.
   for (let i = 0; i < 21; i++) {
     const response = await deployedHandler(new Request('https://sdk-test.example/api/messages', {

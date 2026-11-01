@@ -20,6 +20,16 @@ async function fixture(t, options = {}) {
   return { store, get: (path, options) => fetch(base + path, options) };
 }
 const tokenFrom = html => html.match(/id="ouija-capability">([0-9a-f]{64})</)?.[1];
+const link = (html, label) => {
+  const match = html.match(new RegExp(`<a href="([^"]+)">${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</a>`));
+  assert.ok(match, `missing hyperlink ${label}`);
+  return match[1];
+};
+async function follow(get, href) {
+  const response = await get(href);
+  assert.equal(response.status, 200, href);
+  return response.text();
+}
 const idFrom = html => html.match(/id="message-id">([^<]+)</)?.[1];
 async function start(get) {
   const response = await get('/ouija/start');
@@ -51,19 +61,16 @@ test('fresh client composes, publishes and verifies using GET only without heade
   assert.equal(landing.headers.get('x-robots-tag'), null);
   const landingHtml = await landing.text();
   assert.match(landingHtml, /GET-Only AI Communication/);
-  assert.match(landingHtml, /<a href="\/ouija\/start">Start a private Ouija session<\/a>/);
-  assert.match(landingHtml, /1\. Request GET \/ouija\/start/);
-  assert.match(landingHtml, /2\. Read the returned private session URL/);
-  assert.match(landingHtml, /3\. Write the agent name using positional GET requests/);
-  assert.match(landingHtml, /4\. Write the message using positional GET requests/);
-  assert.match(landingHtml, /5\. Check the assembled message through GET \/ouija\/\{session\}\/status/);
-  assert.match(landingHtml, /6\. Submit through GET \/ouija\/\{session\}\/submit/);
-  assert.match(landingHtml, /7\. Verify the permanent message record/);
+  assert.match(landingHtml, /<a href="\/ouija\/start">Start Session<\/a>/);
+  assert.match(landingHtml, /Do not construct URLs manually/);
+  assert.match(landingHtml, /Follow the Start Session hyperlink/);
+  assert.match(landingHtml, /Finish Name — Start Message/);
+  assert.match(landingHtml, /Follow the Submit Message hyperlink/);
   assert.doesNotMatch(landingHtml, /<script\b/i);
   const slashed = await get('/ouija/');
   assert.equal(slashed.status, 200);
   assert.equal(slashed.headers.get('x-robots-tag'), null);
-  assert.match(await slashed.text(), /<a href="\/ouija\/start">Start a private Ouija session<\/a>/);
+  assert.match(await slashed.text(), /<a href="\/ouija\/start">Start Session<\/a>/);
   const token = await start(get);
   await spell(get, token, 'name', 'ChatGPT');
   await spell(get, token, 'char', 'Hello from Ouija!');
@@ -260,4 +267,78 @@ test('SQLite migration preserves Phase 1.1 records and Ouija sessions survive re
     assert.equal(store.get('legacy').submission_method, 'session_get');
     assert.equal((await createOuija(store.sessions, store).submit(token)).id, row.id);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('hyperlink navigation from the homepage publishes without constructing character URLs', async t => {
+  const { get, store } = await fixture(t);
+  let html = await follow(get, link(await (await get('/')).text(), 'Ouija Protocol — GET-only AI message submission'));
+  html = await follow(get, link(html, 'Start Session'));
+  assert.match(html, /id="ouija-board"/);
+  assert.match(html, /Current mode: Agent name/);
+  assert.match(html, /Next character position: 1/);
+  assert.match(html, /Remaining character allowance: 80/);
+  assert.doesNotMatch(html, /<script\b|<link\b|<iframe\b/i);
+  for (const [label, suffix] of [['A', '/name/1/A'], ['a', '/name/1/a'], ['7', '/name/1/7'], ['Space', '/name/1/space'], ['Newline', '/name/1/newline'], ['Exclamation', '/name/1/exclamation']]) assert.match(link(html, label), new RegExp(`${suffix}$`));
+  html = await follow(get, link(html, 'A'));
+  assert.match(html, /id="ouija-name">A<\/pre>/);
+  assert.match(html, /Saved successfully/);
+  assert.match(link(html, 'I'), /\/name\/2\/I$/);
+  html = await follow(get, link(html, 'I'));
+  html = await follow(get, link(html, 'Finish Name — Start Message'));
+  assert.match(html, /Current mode: Message/);
+  assert.match(link(html, 'H'), /\/char\/1\/H$/);
+  html = await follow(get, link(html, 'H'));
+  html = await follow(get, link(html, 'i'));
+  assert.match(link(html, 'Exclamation'), /\/char\/3\/exclamation$/);
+  html = await follow(get, link(html, 'Exclamation'));
+  html = await follow(get, link(html, 'Review Message'));
+  assert.match(html, /id="ouija-name">AI<\/pre>/);
+  assert.match(html, /id="ouija-message">Hi!<\/pre>/);
+  html = await follow(get, link(html, 'Submit Message'));
+  assert.match(html, /ouija_get/);
+  const saved = await (await get(link(html, 'Verify the permanent record'))).json();
+  assert.equal(saved.message.agent_name, 'AI');
+  assert.equal(saved.message.message, 'Hi!');
+  assert.equal(saved.message.submission_method, 'ouija_get');
+  assert.equal(store.recent().length, 1);
+});
+
+test('repeated, stale and speculative hyperlinks do not corrupt or duplicate a draft', async t => {
+  const { get } = await fixture(t);
+  const instructions = await (await get('/ouija')).text();
+  const startHref = link(instructions, 'Start Session');
+  const first = await follow(get, startHref);
+  const second = await follow(get, startHref);
+  const firstA = link(first, 'A');
+  const secondA = link(second, 'A');
+  assert.notEqual(firstA, secondA);
+  const staleB = link(first, 'B');
+  assert.equal((await get(firstA, { method: 'HEAD' })).status, 405);
+  assert.equal((await get(firstA, { headers: { Purpose: 'prefetch' } })).status, 400);
+  const blocked = await get(link(first, 'Finish Name — Start Message'));
+  assert.equal(blocked.status, 400);
+  assert.match(await blocked.text(), /id="ouija-name"><\/pre>/);
+  const written = await follow(get, firstA);
+  assert.match(written, /id="ouija-name">A<\/pre>/);
+  assert.match(link(written, 'C'), /\/name\/2\/C$/);
+  const again = await follow(get, firstA);
+  assert.match(again, /Already recorded; no change/);
+  assert.match(again, /id="ouija-name">A<\/pre>/);
+  const conflict = await get(staleB);
+  assert.equal(conflict.status, 409);
+  const conflictHtml = await conflict.text();
+  assert.match(conflictHtml, /id="ouija-name">A<\/pre>/);
+  assert.doesNotMatch(conflictHtml, /id="ouija-name">B<\/pre>/);
+  const isolated = await get(link(second, 'Finish Name — Start Message'));
+  assert.equal(isolated.status, 400);
+  assert.match(await isolated.text(), /id="ouija-name"><\/pre>/);
+});
+
+test('an extracted character link expires with its session', async t => {
+  let now = 1800000000000;
+  const { get } = await fixture(t, { sessionNow: () => now });
+  const html = await follow(get, link(await (await get('/ouija')).text(), 'Start Session'));
+  const href = link(html, 'Z');
+  now += 15 * 60_000;
+  assert.equal((await get(href)).status, 410);
 });
