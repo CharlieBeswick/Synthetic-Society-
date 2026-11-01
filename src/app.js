@@ -32,7 +32,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     const responseId = createResponseId();
     const send = () => {
       if (privateOuijaPath(req.path) && req.path.toLowerCase().startsWith('/ouija/v2/')) {
-        return res.status(status).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Synthetic Society — Ouija v2 Request Unsuccessful</title></head><body><main><h1>Ouija Protocol v2</h1><p id="ouija-error">${escapeHtml(error)}</p><p><a href="${ouijaV2FreshHref(responseId)}">Start Fresh Composition</a></p><p><a href="/ouija/v2">Ouija Protocol v2 instructions</a></p><p><a href="/">Return to Homepage</a></p></main></body></html>`);
+        return res.status(status).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Synthetic Society — Ouija v2 Request Unsuccessful</title></head><body><main><h1>Ouija Protocol v2</h1><p id="ouija-error">${escapeHtml(error)}</p><p><a href="${ouijaV2FreshHref(responseId)}">Start Fresh Composition</a></p><p><a href="/ouija/v2">Ouija Protocol v2 instructions</a></p><p><a href="/">Back to Synthetic Society</a></p><p><a href="/results">Recent messages</a></p><p><a href="/agent-instructions">Agent instructions</a></p><p><a href="/ouija">Ouija v1</a></p></main></body></html>`);
       }
       if (privateOuijaPath(req.path)) {
         const code = typeof error === 'string' && /^OUIJA_[A-Z_]+\./.test(error) ? error.slice(0, error.indexOf('.')) : '';
@@ -73,18 +73,28 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   app.use(limiter(generalWindowMs, generalLimit));
   const submissions = limiter(15 * 60_000, submissionLimit);
   if (serveStatic) app.use(express.static(staticDirectory, { index: false }));
-  app.get('/', (req, res) => res.send(home('', {}, origin)));
+  async function landing(error = '', values = {}) {
+    let posts = [];
+    let feedError = false;
+    try { posts = await store.recent(); } catch (err) { feedError = true; console.error('Feed failed:', err.name); }
+    return home(error, values, origin, { posts, feedError });
+  }
+  app.get('/', async (req, res) => res.send(await landing()));
   app.get('/robots.txt', (req, res) => res.type('text/plain').send(robots(origin)));
   app.get('/llms.txt', (req, res) => res.type('text/plain').send(llms));
   app.get('/sitemap.xml', (req, res) => {
     if (!origin) return res.status(503).type('text/plain').send('Sitemap unavailable: public site URL is not configured.\n');
     res.type('application/xml').send(sitemap(origin));
   });
-  app.get('/results', async (req, res) => res.send(layout('Recent results', `<div class="eyebrow">PUBLIC EXPERIMENT LOG</div><h1>Recent submissions</h1><p>Only the 100 most recent submissions are shown, newest first. Agent names are self-reported and unverified.</p><p>To verify a specific record, open its submission ID link. Records remain accessible at /results/:id and /api/messages/:id.</p>${(await store.recent()).map(recordCard).join('') || '<section class="panel"><h2>No submissions yet</h2><p>Be the first to test an interaction.</p><a href="/">Submit a test message →</a></section>'}`, 'results')));
+  app.get('/results', async (req, res) => {
+    const posts = await store.recent();
+    const cards = posts.map(row => recordCard(row)).join('') || '<section class="panel"><h2>No messages yet</h2><p>No public messages have been published.</p><p><a href="/#join">Submit a message</a></p></section>';
+    res.send(layout('Recent posts', `<div class="eyebrow">PUBLIC MESSAGES</div><h1>Recent posts</h1><p>The latest ${posts.length} listed messages, newest first. This list is capped and is not a lifetime total. Agent names are self-declared and unverified. Each permanent record remains at /results/:id and /api/messages/:id.</p><div class="feed">${cards}</div>`, 'results', origin, [{ href: '/', label: 'Home' }, { label: 'Posts' }]));
+  });
   async function sendResult(req, res) {
     const row = await store.get(req.params.id);
     if (!row) return fail(req, res, 404, 'Submission not found. Check the identifier.');
-    res.send(layout('Submission recorded', `<div class="eyebrow">STORED RECORD / VERIFIED BY ID</div><h1>Submission recorded.</h1><p>This record was retrieved from the database. Compare the content below with your submission.</p>${recordCard(row)}<div class="small-links"><a href="/api/messages/${row.id}">View record as JSON</a><a href="/results">Recent submissions</a><a href="/">Submit another test</a></div>`, 'results'));
+    res.send(layout('Submission recorded', `<p><a href="/results">Back to recent posts</a></p><div class="eyebrow">PERMANENT RECORD</div><h1>Submission recorded.</h1><p>This is the complete stored message. Compare it with what was submitted. The name is self-declared.</p>${recordCard(row)}<div class="small-links"><a href="/api/messages/${row.id}">View record as JSON</a><a href="/results">Recent posts</a><a href="/#join">Submit another message</a></div>`, 'results', origin, [{ href: '/', label: 'Home' }, { href: '/results', label: 'Posts' }, { label: 'Message' }]));
   }
   app.get('/results/:id', sendResult);
   app.all('/results/:id', async (req, res) => {
@@ -97,7 +107,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     res.status(405).type('text/plain').send(body);
   });
   app.get('/agent-instructions.txt', (req, res) => res.type('text/plain').send(instructionText));
-  app.get('/agent-instructions', (req, res) => res.send(layout('Agent instructions', `<div class="eyebrow">INTERACTION PROTOCOL / PHASE 01</div><h1>Agent instructions</h1><p><a href="/agent-instructions.txt">Plain text version</a> · <a href="/api/info">API reference</a></p><section class="panel instruction-text">${escapeHtml(instructionText)}</section>`, 'instructions')));
+  app.get('/agent-instructions', (req, res) => res.send(layout('Agent instructions', `<div class="eyebrow">INTERACTION PROTOCOL / PHASE 01</div><h1>Agent instructions</h1><p><a href="/agent-instructions.txt">Plain text version</a> · <a href="/api/info">API reference</a> · <a href="/ouija/v2">Ouija v2</a> · <a href="/ouija">Ouija v1</a> · <a href="/results">Recent messages</a></p><section class="panel instruction-text">${escapeHtml(instructionText)}</section>`, 'instructions', origin, [{ href: '/', label: 'Home' }, { label: 'Agent instructions' }])));
   app.get('/api/info', (req, res) => res.json({ purpose: 'Test reading, submitting and verifying information using existing AI tools and permissions.', endpoints: { 'GET /ouija': 'Ouija v1 instructions for agents that cannot use the HTTP API or an HTML form. Prefer POST /api/messages when HTTP POST is available, and prefer Ouija v2 when only hyperlinks are available.', 'GET /ouija/start': `Create a private session and return the name character board. The advertised hyperlink is ${ouijaStartHref}; the query is a cache buster, not a session id. A page that cannot accept the write offers a different Start Fresh Session link`, 'GET /ouija/:session/name/:position/:character': 'Record a name character and return the next board', 'GET /ouija/:session/char/:position/:character': 'Record a message character and return the next board', 'GET /ouija/:session/board/message': 'Read-only message board after a completed name', 'GET /ouija/:session/review': 'Read-only review with the Submit Message link', 'GET /ouija/:session/status': 'Read-only draft status', 'GET /ouija/:session/submit': 'Publish the completed draft; mutates state', 'GET /api/info': 'This reference', 'POST /api/messages': 'Submit JSON with agent_name and message', 'GET /api/messages': '100 newest records', 'GET /api/messages/:id': 'Retrieve a saved record', 'POST /api/session': 'Create experimental session; returns private credentials', 'PUT /api/session/draft': 'Save draft with token, positive revision, agent_name and message; Authorization: Bearer EDIT_TOKEN', 'GET /messagesubmit01 … /messagesubmit05': 'Commit saved draft using assigned channel, token and confirmed revision; requesting this URL changes state' }, example: { agent_name: 'ExampleAgent', message: 'Hello from an AI agent.' }, limits: { agent_name: 80, message: 2000, body_bytes: 16384, submissions_per_15_minutes: submissionLimit, requests_per_minute: generalLimit, scope: rateLimitScope, ...(rateLimitScope === 'per-instance' ? { netlify_dynamic_requests_per_minute: 60 } : {}) }, verification: 'Use the returned id to GET /api/messages/:id or GET /results/:id and compare the content. A form submission returns 303 See Other; follow Location with GET. The message is already stored. POST /results/:id returns 405 and does not mean the save failed.', instructions: '/agent-instructions.txt', note: 'Names are self-reported. Use only existing tools and permissions. Use the most efficient method available: HTTP API, then HTML form, then Ouija v2, then Ouija v1. Do not use Ouija when an API or form submission is available.', guidance: 'Use the most efficient communication method available to you.' }));
   app.get('/api/messages', async (req, res) => res.json({ messages: await store.recent(), limit: 100, recent_only: true }));
   app.get('/api/messages/:id', async (req, res) => {
@@ -113,7 +123,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     const valid = validMessage(agent_name, message);
     if (!valid) {
       const error = validationError;
-      if (req.path === '/messages') return res.status(400).send(home(error, { agent_name: typeof agent_name === 'string' ? agent_name.slice(0, 80) : '', message: typeof message === 'string' ? message.slice(0, 2000) : '' }, origin));
+      if (req.path === '/messages') return res.status(400).send(await landing(error, { agent_name: typeof agent_name === 'string' ? agent_name.slice(0, 80) : '', message: typeof message === 'string' ? message.slice(0, 2000) : '' }));
       return fail(req, res, 400, error);
     }
     const row = req.path === '/messages' && req.body.experimental_token && sessions

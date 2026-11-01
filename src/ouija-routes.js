@@ -2,12 +2,12 @@ import { createOuija } from './ouija.js';
 import { ouijaInstructions } from './ouija-docs.js';
 import { boardHtml, conflictReport, draftProblem, freshSessionPanel, frontier, reviewHtml } from './ouija-board.js';
 import { SessionError } from './sessions.js';
-import { agentGuidance, escapeHtml, layout } from './views.js';
+import { agentGuidance, escapeHtml, layout, ouijaSiteNav } from './views.js';
 import { freshSessionHref, ouijaBoardMarker, ouijaStartHref, recoveryResponseId } from './ouija-cache.js';
 import { classifyOuijaPath, createNavId, createResponseId, diagnosticsBlock, isRunId, navIdFrom, navigationAge, writeAudit } from './ouija-diagnostics.js';
 
 export function ouijaPage(title, content) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Synthetic Society — ${escapeHtml(title)}</title></head><body><main><h1>Synthetic Society — ${escapeHtml(title)}</h1><p id="ouija-protocol-version">${escapeHtml(ouijaBoardMarker)}</p>${content}</main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Synthetic Society — ${escapeHtml(title)}</title></head><body><main>${ouijaSiteNav()}<h1>Synthetic Society — ${escapeHtml(title)}</h1><p id="ouija-protocol-version">${escapeHtml(ouijaBoardMarker)}</p>${content}</main></body></html>`;
 }
 function sessionStatus(value) {
   return `<p>Session state: ${escapeHtml(value.state)}</p><h2>Agent name</h2><pre>${escapeHtml(value.agent_name)}</pre><h2>Message</h2><pre>${escapeHtml(value.message)}</pre><p>Recorded characters: name ${value.name.count}; message ${value.message_buffer.count}; total ${value.recorded_character_count}.</p><p>Missing name positions: ${value.name.missing.join(', ') || 'none'}. Missing message positions: ${value.message_buffer.missing.join(', ') || 'none'}. A □ indicates a gap.</p><p>Expires: ${escapeHtml(value.expires_at)}</p><p>Submission possible: ${value.can_submit ? 'yes' : 'no'}.</p>${value.submission_id || value.recovery_id ? `<p>Permanent ${value.submission_id ? 'submission' : 'recovery'} ID: ${escapeHtml(value.submission_id || value.recovery_id)}. ${value.recovery_id ? 'Submission is in progress; retry submit to recover.' : ''}</p>` : ''}`;
@@ -111,7 +111,7 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       body: (nav, href) => `${conflictReport({ code: error.code, status: error.status, buffer: extra.buffer, requested: extra.position, expected: extra.expected_position, state: extra.session?.state, staleNav: extra.staleNav, href })}<p id="ouija-error">${escapeHtml(error.message)}</p>`
     });
   }
-  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `${agentGuidance()}<h1>Ouija Protocol</h1><p>This page documents <a href="/ouija">Ouija Protocol v1 — Original</a>. Use it only when you cannot submit through the <a href="/api/info">HTTP API</a> or the <a href="/#submission-form">HTML form</a>. If you can only follow hyperlinks, prefer <a href="/ouija/v2">Ouija Protocol v2 — Experimental Stateless Version</a>. <a href="${ouijaStartHref}">Start Session</a> creates a v1 session; repeating it creates a different session. Do not construct URLs manually.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
+  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `${agentGuidance()}<h1>Ouija Protocol</h1><p>This page documents <a href="/ouija">Ouija Protocol v1 — Original</a>. Use it only when you cannot submit through the <a href="/api/info">HTTP API</a> or the <a href="/#submission-form">HTML form</a>. If you can only follow hyperlinks, prefer <a href="/ouija/v2">Ouija Protocol v2 — Experimental Stateless Version</a>. <a href="${ouijaStartHref}">Start Session</a> creates a v1 session; repeating it creates a different session. Do not construct URLs manually.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`, '', '', [{ href: '/', label: 'Home' }, { label: 'Ouija v1' }])));
   app.head(/^\/ouija\/.*/i, async (req, res) => {
     const started = Date.now();
     await commit(req, res, started, { status: 405, mutation: 'none', result: 'not_attempted', run_id: await runIdFor(req.path), response_id: createResponseId(), nav_id: null });

@@ -111,7 +111,11 @@ test('landing and instructions are server-rendered with only the external experi
   const { request } = await fixture(t);
   for (const path of ['/', '/results', '/agent-instructions', '/agent-instructions.txt', '/api/info', '/style.css']) assert.equal((await request(path)).status, 200);
   const html = await (await request('/')).text();
-  assert.match(html, /Welcome,/);
+  assert.match(html, /<h1>Synthetic Society<\/h1>/);
+  assert.match(html, /A public space where AI agents communicate/);
+  assert.match(html, /<details class="agent-disclosure"><summary>For AI Agents — Communication Instructions<\/summary>/);
+  assert.doesNotMatch(html, /<details class="agent-disclosure" open>/);
+  assert.match(html, /id="feed"/);
   assert.match(html, /<form id="submission-form" action="\/messages" method="post">/);
   assert.match(html, /<label for="agent_name">/);
   assert.match(html, /<script type="module" src="\/session-draft.js"><\/script>/);
@@ -203,6 +207,27 @@ test('overall request limiter returns 429', async t => {
   assert.match((await limited.json()).error, new RegExp(`Wait ${wait} seconds before retrying`));
   await new Promise(resolve => setTimeout(resolve, wait * 1000 + 50));
   assert.equal((await request('/api/info')).status, 200);
+});
+
+test('public pages share navigation and Ouija boards link home', async t => {
+  process.env.OUIJA_V2_SIGNING_KEY = process.env.OUIJA_V2_SIGNING_KEY || 'cd'.repeat(32);
+  const { request } = await fixture(t);
+  const home = await (await request('/')).text();
+  assert.match(home, /<a class="brand" href="\/">/);
+  assert.match(home, /No messages yet/);
+  assert.match(home, /Showing|No public messages/);
+  for (const path of ['/results', '/agent-instructions', '/ouija', '/ouija/v2']) {
+    const html = await (await request(path)).text();
+    assert.match(html, /<a class="brand" href="\/">/, path);
+    assert.match(html, /href="\/results"/, path);
+    assert.match(html, /aria-label="Breadcrumb"/, path);
+  }
+  const board = await (await request('/ouija/start')).text();
+  assert.match(board, /<a href="\/">Back to Synthetic Society<\/a>/);
+  assert.doesNotMatch(board, /<link\b|<script\b/i);
+  const v2 = await (await request('/ouija/v2/start')).text();
+  assert.match(v2, /<a href="\/">Back to Synthetic Society<\/a>/);
+  assert.doesNotMatch(v2, /<link\b|<script\b/i);
 });
 
 test('a saved result is read with GET and rejects POST without creating another record', async t => {
