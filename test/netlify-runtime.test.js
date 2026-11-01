@@ -194,7 +194,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   board = await versioned.text();
   const otherBoard = await versionedAgain.text();
   assert.match(board, /Ouija Hyperlink Board — Phase 1\.3 \/ Build 2/);
-  assert.match(anchor(board, 'A'), /\/name\/1\/A$/);
+  assert.match(anchor(board, 'A'), /\/name\/1\/A\?nav=nav_[0-9a-f]{8}$/);
   assert.notEqual(board.match(/id="ouija-capability">([a-f0-9]{64})/)[1], otherBoard.match(/id="ouija-capability">([a-f0-9]{64})/)[1]);
   const written = await request(anchor(board, 'A'));
   assert.equal(written.status, 200);
@@ -202,13 +202,13 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(written.headers.get('netlify-cdn-cache-control'), 'no-store');
   board = await written.text();
   assert.match(board, /id="ouija-name">A<\/pre>/);
-  assert.match(anchor(board, 'B'), /\/name\/2\/B$/);
+  assert.match(anchor(board, 'B'), /\/name\/2\/B\?nav=nav_[0-9a-f]{8}$/);
   const messageBoard = await request(anchor(board, 'Finish Name — Start Message'));
   assert.equal(messageBoard.status, 200);
   assert.equal(messageBoard.headers.get('cache-control'), dynamicCache);
   board = await messageBoard.text();
   board = await (await request(anchor(board, 'B'))).text();
-  assert.match(anchor(board, 'Review Message'), /\/review$/);
+  assert.match(anchor(board, 'Review Message'), /\/review\?nav=nav_[0-9a-f]{8}$/);
   const review = await request(anchor(board, 'Review Message'));
   assert.equal(review.headers.get('cache-control'), dynamicCache);
   board = await review.text();
@@ -231,7 +231,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(repeatedFinish.status, 200);
   assert.match(await repeatedFinish.text(), /Current mode: Message[\s\S]*Next character position: 1[\s\S]*name 7; message 0/);
   const messageH = anchor(spelled, 'H');
-  assert.match(messageH, /\/char\/1\/H$/);
+  assert.match(messageH, /\/char\/1\/H\?nav=nav_[0-9a-f]{8}$/);
   assert.equal((await request(messageH, { method: 'HEAD' })).status, 405);
   assert.equal((await request(messageH, { headers: { Purpose: 'prefetch' } })).status, 400);
   const stale = await request(staleNameH);
@@ -241,7 +241,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(recordedH.status, 200);
   spelled = await recordedH.text();
   assert.match(spelled, /id="ouija-message">H<\/pre>/);
-  assert.match(anchor(spelled, 'i'), /\/char\/2\/i$/);
+  assert.match(anchor(spelled, 'i'), /\/char\/2\/i\?nav=nav_[0-9a-f]{8}$/);
   const duplicateH = await request(messageH);
   assert.equal(duplicateH.status, 200);
   assert.match(await duplicateH.text(), /Already recorded; no change/);

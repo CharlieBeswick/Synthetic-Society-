@@ -7,14 +7,16 @@ import { rateLimit } from 'express-rate-limit';
 import { layout, home, recordCard, instructions, escapeHtml } from './views.js';
 import { publicOrigin, robots, sitemap, llms } from './discovery.js';
 import { ouijaDynamicCacheControl } from './ouija-cache.js';
+import { classifyOuijaPath, createResponseId, navIdFrom, writeAudit } from './ouija-diagnostics.js';
 
 const privateOuijaPath = path => /^\/ouija\/.+/i.test(path);
 
-export function createApp(store, { trustProxy = false, submissionLimit = 20, generalLimit = 300, publicSiteUrl = '', serveStatic = true, staticDirectory = 'public', rateLimitScope = 'single-process', sessionBackend = store.sessions, sessionNow, chooseSlot } = {}) {
+export function createApp(store, { trustProxy = false, submissionLimit = 20, generalLimit = 300, publicSiteUrl = '', serveStatic = true, staticDirectory = 'public', rateLimitScope = 'single-process', sessionBackend = store.sessions, sessionNow, chooseSlot, auditLog = store.audit } = {}) {
   const origin = publicOrigin(publicSiteUrl);
   const instructionText = rateLimitScope === 'per-instance'
     ? instructions.replace('Submissions are limited to 20 per client IP per 15 minutes, shared across form and API. Other requests share an overall 300 per minute per IP limit.', 'On Netlify, a platform limit of 60 dynamic requests per minute per IP and domain applies. Additional per-instance limits allow 20 submission attempts per 15 minutes and 300 requests per minute per IP; these counters are not shared across instances and reset on cold starts. Platform rate-limit responses may differ from application responses.')
     : instructions;
+  const clock = sessionNow || Date.now;
   const app = express();
   app.disable('x-powered-by');
   app.set('trust proxy', trustProxy);
@@ -25,13 +27,35 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     next();
   });
   function fail(req, res, status, error) {
-    if (privateOuijaPath(req.path)) {
-      const code = typeof error === 'string' && error.startsWith('OUIJA_') ? error.slice(0, error.indexOf('.')) : '';
-      return res.status(status).send(ouijaPage(code || 'Ouija Request Unsuccessful', `<p id="ouija-error">${escapeHtml(error)}</p><p><a href="/ouija">Protocol instructions</a></p>`));
-    }
-    return req.path.startsWith('/api/') ? res.status(status).json({ success: false, error }) : res.status(status).send(layout('Request unsuccessful', `<section class="panel"><h1>Request unsuccessful</h1><p>${escapeHtml(error)}</p><a href="/">Return to the test</a></section>`));
+    const send = () => {
+      if (privateOuijaPath(req.path)) {
+        const code = typeof error === 'string' && /^OUIJA_[A-Z_]+\./.test(error) ? error.slice(0, error.indexOf('.')) : '';
+        return res.status(status).send(ouijaPage(code || 'Ouija Request Unsuccessful', `<p id="ouija-error">${escapeHtml(error)}</p><p><a href="/ouija">Protocol instructions</a></p>`));
+      }
+      return req.path.startsWith('/api/') ? res.status(status).json({ success: false, error }) : res.status(status).send(layout('Request unsuccessful', `<section class="panel"><h1>Request unsuccessful</h1><p>${escapeHtml(error)}</p><a href="/">Return to the test</a></section>`));
+    };
+    if (!privateOuijaPath(req.path) || res.locals.ouijaAudited) return send();
+    res.locals.ouijaAudited = true;
+    const classified = classifyOuijaPath(req.path);
+    return writeAudit(auditLog, {
+      at: new Date(clock()).toISOString(),
+      method: req.method,
+      route: classified.route,
+      buffer: classified.buffer,
+      position: classified.position,
+      run_id: null,
+      response_id: createResponseId(),
+      nav_id: null,
+      followed_nav_id: navIdFrom(req.query?.nav),
+      status,
+      code: typeof error === 'string' && /^OUIJA_[A-Z_]+\./.test(error) ? error.slice(0, error.indexOf('.')) : '',
+      mutation: 'none',
+      result: 'rejected',
+      duration_ms: 0,
+      expected_position: null
+    }).then(send);
   }
-  const limiter = (windowMs, limit) => rateLimit({ windowMs, limit, standardHeaders: 'draft-8', legacyHeaders: false, handler: (req, res) => fail(req, res, 429, 'Too many requests. Please wait and follow the Retry-After header.') });
+  const limiter = (windowMs, limit) => rateLimit({ windowMs, limit, standardHeaders: 'draft-8', legacyHeaders: false, handler: (req, res, next) => Promise.resolve(fail(req, res, 429, 'Too many requests. Please wait and follow the Retry-After header.')).catch(next) });
   app.use(limiter(60_000, generalLimit));
   const submissions = limiter(15 * 60_000, submissionLimit);
   if (serveStatic) app.use(express.static(staticDirectory, { index: false }));
@@ -56,7 +80,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     const message = await store.get(req.params.id);
     return message ? res.json({ success: true, message }) : fail(req, res, 404, 'Submission not found.');
   });
-  mountOuijaRoutes(app, store, { backend: sessionBackend, now: sessionNow, submissions, limiter, fail });
+  mountOuijaRoutes(app, store, { backend: sessionBackend, now: sessionNow, submissions, limiter, fail, audit: auditLog });
   const sessions = mountSessionRoutes(app, store, { backend: sessionBackend, now: sessionNow, chooseSlot, submissions, limiter, fail });
   const requireType = type => (req, res, next) => req.is(type) ? next() : fail(req, res, 415, `Content-Type must be ${type}.`);
   async function submit(req, res) {

@@ -2,7 +2,7 @@ import { getStore } from '@netlify/blobs';
 import { withLambda } from '@netlify/aws-lambda-compat';
 import { createBlobsStore } from '../../src/blobs-store.js';
 import { createNetlifyHandler } from '../../src/netlify-handler.js';
-import { blobsSessions } from '../../src/session-backends.js';
+import { blobsAudit, blobsSessions } from '../../src/session-backends.js';
 
 let run;
 const invoke = withLambda(async (event, context) => {
@@ -11,12 +11,13 @@ const invoke = withLambda(async (event, context) => {
       // Site-wide store survives new deployments. Never use a deploy store here.
       const currentStore = () => createBlobsStore(getStore({ name: process.env.BLOBS_STORE_NAME || 'synthetic-society-messages', consistency: 'strong' }));
       // Resolve the SDK client using this invocation's context, not a cached token.
+      const sessionBlobs = () => getStore({ name: `${process.env.BLOBS_STORE_NAME || 'synthetic-society-messages'}-sessions`, consistency: 'strong' });
       run = createNetlifyHandler({
         add: (...args) => currentStore().add(...args),
         putIfAbsent: record => currentStore().putIfAbsent(record),
         get: (...args) => currentStore().get(...args),
         recent: () => currentStore().recent()
-      }, process.env, blobsSessions(() => getStore({ name: `${process.env.BLOBS_STORE_NAME || 'synthetic-society-messages'}-sessions`, consistency: 'strong' })));
+      }, process.env, blobsSessions(sessionBlobs), blobsAudit(sessionBlobs));
     }
     return await run(event, context);
   } catch (error) {

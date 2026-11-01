@@ -1,4 +1,5 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
+import { createRunId, isRunId } from './ouija-diagnostics.js';
 import { SessionError } from './sessions.js';
 import { cleanupSessions } from './session-cleanup.js';
 import { validMessage, validationError } from './validation.js';
@@ -39,6 +40,9 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
     if (entry.value.state === 'expired' || entry.value.expires_at <= now()) fail(410, 'Ouija session expired. Start a new session; check any known receipt before resubmitting.');
     return { key, ...entry };
   }
+  function present(value) {
+    return { experiment_run_id: isRunId(value.run_id) ? value.run_id : null, ...inspect(value) };
+  }
   function inspect(value) {
     const name = inspectBuffer(value.name);
     const message = inspectBuffer(value.message);
@@ -54,10 +58,10 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
       await cleanupSessions(backend, now);
       const token = randomBytes(32).toString('hex');
       const time = now();
-      const value = { kind: 'ouija', state: 'writing', created_at: time, last_activity: time, expires_at: time + duration, message_id: `${String(time).padStart(13, '0')}-${randomUUID()}`, name: {}, message: {} };
+      const value = { kind: 'ouija', state: 'writing', run_id: createRunId(), created_at: time, last_activity: time, expires_at: time + duration, message_id: `${String(time).padStart(13, '0')}-${randomUUID()}`, name: {}, message: {} };
       const key = 'ouija-' + createHash('sha256').update(token).digest('hex');
       if (!await backend.create(key, value)) fail(503, 'Ouija session allocation failed. Retry start.');
-      return { token, ...inspect(value) };
+      return { token, ...present(value) };
     },
     async write(token, buffer, positionText, symbol) {
       const maximum = buffer === 'name' ? 80 : 2000;
@@ -70,15 +74,16 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
         const value = entry.value;
         if (Object.hasOwn(value[buffer], position)) {
           if (value[buffer][position] !== character) fail(409, `OUIJA_POSITION_CONFLICT. The ${target} already contains a different character. Positions are immutable; start a new session to correct it. Follow a character link on the latest board instead of reusing an earlier link.`, 'OUIJA_POSITION_CONFLICT');
-          return { already_recorded: true, buffer, position, character, ...inspect(value) };
+          return { already_recorded: true, buffer, position, character, ...present(value) };
         }
         if (value.state !== 'writing') fail(409, `OUIJA_STATE_CONFLICT. The ${target} was not recorded because the session is submitting or submitted. Retry submit for its receipt.`, 'OUIJA_STATE_CONFLICT');
         const time = now();
         const next = { ...value, [buffer]: { ...value[buffer], [position]: character }, last_activity: time, expires_at: time + duration };
-        if (await backend.swap(entry.key, next, entry.etag)) return { already_recorded: false, buffer, position, character, ...inspect(next) };
+        if (await backend.swap(entry.key, next, entry.etag)) return { already_recorded: false, buffer, position, character, ...present(next) };
       }
       fail(409, `OUIJA_STORAGE_CONFLICT. The ${target} was not recorded because concurrent writes are busy. Retry this same character URL; no successful write is silently discarded.`, 'OUIJA_STORAGE_CONFLICT');
     },
+    async meta(token) { return present((await read(token)).value); },
     async status(token) { return inspect((await read(token)).value); },
     async submit(token) {
       for (let attempt = 0; attempt < 8; attempt++) {
