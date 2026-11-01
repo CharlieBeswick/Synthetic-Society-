@@ -2,6 +2,7 @@ const privateOuijaPath = /^\/ouija\/.+/i;
 
 // Netlify's edge routing turns HEAD into GET before a function runs, which
 // would create an Ouija session. Reject HEAD here, before that rewrite.
+// The deploy manifest rejects method: "HEAD", so the method is checked below.
 export default (request) => {
   const path = new URL(request.url).pathname;
   if (request.method !== 'HEAD' || !privateOuijaPath.test(path)) return;
@@ -18,4 +19,4 @@ export default (request) => {
   });
 };
 
-export const config = { pattern: '/[Oo][Uu][Ii][Jj][Aa]/.+', method: 'HEAD' };
+export const config = { pattern: '/[Oo][Uu][Ii][Jj][Aa]/.+' };

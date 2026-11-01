@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import ouijaHead, { config } from '../netlify/edge-functions/ouija-head.js';
 
 test('edge HEAD guard stops private Ouija paths before Netlify rewrites HEAD to GET', async () => {
-  assert.equal(config.method, 'HEAD');
+  assert.equal(config.method, undefined);
   const routed = new RegExp(`^${config.pattern}$`);
   for (const path of ['/ouija/start', '/ouija/start/', '/OUIJA/TOKEN/submit', '/ouija/abc/char/1/H']) assert.match(path, routed);
   for (const path of ['/ouija', '/ouija/', '/results', '/ouija-board']) assert.doesNotMatch(path, routed);
