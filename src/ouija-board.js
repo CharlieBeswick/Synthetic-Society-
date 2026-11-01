@@ -23,6 +23,13 @@ function context(status, modeLabel, positionText, remaining) {
 
 const withNav = (path, nav) => nav ? `${path}?nav=${nav}` : path;
 
+export function freshSessionPanel(href, kind) {
+  const link = `<p><a href="${escapeHtml(href)}">Start Fresh Session</a></p>`;
+  if (kind === 'blocked') return `<section id="ouija-fresh-session"><p>This Ouija session cannot accept new characters.</p><p>You may be viewing an older session returned by your webpage retrieval tool.</p>${link}</section>`;
+  if (kind === 'conflict') return `<section id="ouija-fresh-session"><p>This Ouija session cannot accept that character.</p><p>You may be viewing an older session returned by your webpage retrieval tool.</p>${link}</section>`;
+  return `<section id="ouija-fresh-session"><p>This session already contains characters. If you did not write them, your webpage retrieval tool may have returned an older session.</p>${link}<p>A character link on this page continues this session and does not replace stored characters.</p></section>`;
+}
+
 export function boardHtml(token, status, { mode, position, notice = '', nav = '' }) {
   const maximum = maxima[mode];
   const buffer = mode === 'name' ? status.name : status.message_buffer;

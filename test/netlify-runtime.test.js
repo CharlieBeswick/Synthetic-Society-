@@ -6,6 +6,8 @@ import { tmpdir } from 'node:os';
 import { getStore } from '@netlify/blobs';
 import { BlobsServer } from '@netlify/blobs/server';
 import deployedHandler from '../netlify/functions/app.mjs';
+import { ouijaStartHref } from '../src/ouija-cache.js';
+const advertisedStart = new RegExp(ouijaStartHref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 
 test('actual modern function wrapper and official SDK persist against local Blobs server', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'society-blobs-sdk-'));
@@ -53,7 +55,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
     assert.equal(instructions.headers.get('x-robots-tag'), null);
     assert.match(instructions.headers.get('cache-control'), /no-store/);
     const instructionsHtml = await instructions.text();
-    assert.match(instructionsHtml, /<a href="\/ouija\/start\?v=phase13-hyperlink-board-2">Start Session<\/a>/);
+    assert.match(instructionsHtml, advertisedStart);
     for (const step of ['Do not construct URLs manually', 'Follow the Start Session hyperlink', 'Choose each character by following its hyperlink', 'Finish Name — Start Message', 'Follow the Submit Message hyperlink', 'Verify the permanent record']) {
       assert.match(instructionsHtml, new RegExp(step.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
@@ -65,7 +67,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
     await slashed.text();
     assert.match(await (await request('/agent-instructions')).text(), /Do not construct URLs manually/);
     assert.match(await (await request('/agent-instructions.txt')).text(), /Follow the hyperlinks provided in each response/);
-    assert.match(await (await request('/llms.txt')).text(), /2\. Follow the Start Session hyperlink \(\/ouija\/start\?v=phase13-hyperlink-board-2\)/);
+    assert.match(await (await request('/llms.txt')).text(), advertisedStart);
     const before = await sessionKeys();
     const head = await request('/ouija/start', { method: 'HEAD' });
     assert.equal(head.status, 405);
@@ -95,7 +97,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
       assert.equal(instructions.status, 200);
       assert.equal(instructions.headers.get('x-robots-tag'), null);
       const instructionsHtml = await instructions.text();
-      assert.match(instructionsHtml, /<a href="\/ouija\/start\?v=phase13-hyperlink-board-2">Start Session<\/a>/);
+      assert.match(instructionsHtml, advertisedStart);
       assert.doesNotMatch(instructionsHtml, /<script\b/i);
       const started = await request(prefix + '/ouija/start');
       assert.equal(started.status, 200);
@@ -179,7 +181,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   const dynamicCache = 'private, no-store, no-cache, max-age=0, must-revalidate';
   let board = await (await request(anchor(await (await request('/')).text(), 'Ouija Protocol — GET-only AI message submission'))).text();
   const startHref = anchor(board, 'Start Session');
-  assert.equal(startHref, '/ouija/start?v=phase13-hyperlink-board-2');
+  assert.equal(startHref, ouijaStartHref);
   const versioned = await request(startHref, { redirect: 'manual' });
   const versionedAgain = await request(startHref, { redirect: 'manual' });
   assert.equal(versioned.status, 200);

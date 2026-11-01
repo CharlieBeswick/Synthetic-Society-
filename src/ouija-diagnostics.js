@@ -6,6 +6,7 @@ export const createRunId = () => `run_${hex(6)}`;
 export const createResponseId = () => `resp_${hex(4)}`;
 export const createNavId = () => `nav_${hex(4)}`;
 export const isRunId = value => typeof value === 'string' && /^run_[0-9a-f]{12}$/.test(value);
+export const isResponseId = value => typeof value === 'string' && /^resp_[0-9a-f]{8}$/.test(value);
 export const isNavId = value => typeof value === 'string' && /^nav_[0-9a-f]{8}$/.test(value);
 export const navIdFrom = value => isNavId(value) ? value : null;
 export const AUDIT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
@@ -41,7 +42,8 @@ export function buildAuditEvent(fields) {
     method: fields.method === 'HEAD' ? 'HEAD' : 'GET',
     route,
     run_id: isRunId(fields.run_id) ? fields.run_id : null,
-    response_id: typeof fields.response_id === 'string' && /^resp_[0-9a-f]{8}$/.test(fields.response_id) ? fields.response_id : createResponseId(),
+    response_id: isResponseId(fields.response_id) ? fields.response_id : createResponseId(),
+    recovery_of: isResponseId(fields.recovery_of) ? fields.recovery_of : null,
     nav_id: navIdFrom(fields.nav_id),
     followed_nav_id: navIdFrom(fields.followed_nav_id),
     status: Number.isInteger(fields.status) ? fields.status : 0,
@@ -114,7 +116,8 @@ export function formatRun(events) {
     event.response_id,
     event.nav_id ? `advertises ${event.nav_id}` : 'advertises -',
     event.followed_nav_id ? `followed ${event.followed_nav_id}` : 'followed -',
-    event.origin_response_id ? `origin ${event.origin_response_id}` : 'origin -'
+    event.origin_response_id ? `origin ${event.origin_response_id}` : 'origin -',
+    event.recovery_of ? `recovery ${event.recovery_of}` : 'recovery -'
   ].join(' ')).join('\n');
 }
 

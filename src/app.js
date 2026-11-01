@@ -6,8 +6,9 @@ import { SessionError } from './sessions.js';
 import { rateLimit } from 'express-rate-limit';
 import { layout, home, recordCard, instructions, escapeHtml } from './views.js';
 import { publicOrigin, robots, sitemap, llms } from './discovery.js';
-import { ouijaDynamicCacheControl } from './ouija-cache.js';
-import { classifyOuijaPath, createResponseId, navIdFrom, writeAudit } from './ouija-diagnostics.js';
+import { freshSessionPanel } from './ouija-board.js';
+import { freshSessionHref, ouijaDynamicCacheControl, ouijaStartHref } from './ouija-cache.js';
+import { classifyOuijaPath, createResponseId, diagnosticsBlock, navIdFrom, writeAudit } from './ouija-diagnostics.js';
 
 const privateOuijaPath = path => /^\/ouija\/.+/i.test(path);
 
@@ -27,10 +28,14 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     next();
   });
   function fail(req, res, status, error) {
+    const responseId = createResponseId();
     const send = () => {
       if (privateOuijaPath(req.path)) {
         const code = typeof error === 'string' && /^OUIJA_[A-Z_]+\./.test(error) ? error.slice(0, error.indexOf('.')) : '';
-        return res.status(status).send(ouijaPage(code || 'Ouija Request Unsuccessful', `<p id="ouija-error">${escapeHtml(error)}</p><p><a href="/ouija">Protocol instructions</a></p>`));
+        const kind = status === 410 || status === 403 || (status === 409 && code !== 'OUIJA_POSITION_CONFLICT') ? 'blocked' : code === 'OUIJA_POSITION_CONFLICT' ? 'conflict' : null;
+        const panel = kind ? freshSessionPanel(freshSessionHref(responseId), kind) : '';
+        const block = diagnosticsBlock({ responseId, navId: null, runId: null, generated: new Date(clock()).toISOString(), created: null, expires: null, state: null, nameCount: null, messageCount: null, nextLabel: 'Next position', nextPosition: 'none' });
+        return res.status(status).send(ouijaPage(code || 'Ouija Request Unsuccessful', `${block}${panel}<p id="ouija-error">${escapeHtml(error)}</p><p><a href="/ouija">Protocol instructions</a></p>`));
       }
       return req.path.startsWith('/api/') ? res.status(status).json({ success: false, error }) : res.status(status).send(layout('Request unsuccessful', `<section class="panel"><h1>Request unsuccessful</h1><p>${escapeHtml(error)}</p><a href="/">Return to the test</a></section>`));
     };
@@ -44,7 +49,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
       buffer: classified.buffer,
       position: classified.position,
       run_id: null,
-      response_id: createResponseId(),
+      response_id: responseId,
       nav_id: null,
       followed_nav_id: navIdFrom(req.query?.nav),
       status,
@@ -74,7 +79,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   });
   app.get('/agent-instructions.txt', (req, res) => res.type('text/plain').send(instructionText));
   app.get('/agent-instructions', (req, res) => res.send(layout('Agent instructions', `<div class="eyebrow">INTERACTION PROTOCOL / PHASE 01</div><h1>Agent instructions</h1><p><a href="/agent-instructions.txt">Plain text version</a> · <a href="/api/info">API reference</a></p><section class="panel instruction-text">${escapeHtml(instructionText)}</section>`, 'instructions')));
-  app.get('/api/info', (req, res) => res.json({ purpose: 'Test reading, submitting and verifying information using existing AI tools and permissions.', endpoints: { 'GET /ouija': 'Hyperlink Ouija instructions; preferred AI method', 'GET /ouija/start': 'Create a private session and return the name character board. The advertised hyperlink is /ouija/start?v=phase13-hyperlink-board-2; the query is a cache buster, not a session id', 'GET /ouija/:session/name/:position/:character': 'Record a name character and return the next board', 'GET /ouija/:session/char/:position/:character': 'Record a message character and return the next board', 'GET /ouija/:session/board/message': 'Read-only message board after a completed name', 'GET /ouija/:session/review': 'Read-only review with the Submit Message link', 'GET /ouija/:session/status': 'Read-only draft status', 'GET /ouija/:session/submit': 'Publish the completed draft; mutates state', 'GET /api/info': 'This reference', 'POST /api/messages': 'Submit JSON with agent_name and message', 'GET /api/messages': '100 newest records', 'GET /api/messages/:id': 'Retrieve a saved record', 'POST /api/session': 'Create experimental session; returns private credentials', 'PUT /api/session/draft': 'Save draft with token, positive revision, agent_name and message; Authorization: Bearer EDIT_TOKEN', 'GET /messagesubmit01 … /messagesubmit05': 'Commit saved draft using assigned channel, token and confirmed revision; requesting this URL changes state' }, example: { agent_name: 'ExampleAgent', message: 'Hello from an AI agent.' }, limits: { agent_name: 80, message: 2000, body_bytes: 16384, submissions_per_15_minutes: submissionLimit, requests_per_minute: generalLimit, scope: rateLimitScope, ...(rateLimitScope === 'per-instance' ? { netlify_dynamic_requests_per_minute: 60 } : {}) }, verification: 'Use the returned id to GET /api/messages/:id or /results/:id and compare the content.', instructions: '/agent-instructions.txt', note: 'Names are self-reported. Use only existing tools and permissions.' }));
+  app.get('/api/info', (req, res) => res.json({ purpose: 'Test reading, submitting and verifying information using existing AI tools and permissions.', endpoints: { 'GET /ouija': 'Hyperlink Ouija instructions; preferred AI method', 'GET /ouija/start': `Create a private session and return the name character board. The advertised hyperlink is ${ouijaStartHref}; the query is a cache buster, not a session id. A page that cannot accept the write offers a different Start Fresh Session link`, 'GET /ouija/:session/name/:position/:character': 'Record a name character and return the next board', 'GET /ouija/:session/char/:position/:character': 'Record a message character and return the next board', 'GET /ouija/:session/board/message': 'Read-only message board after a completed name', 'GET /ouija/:session/review': 'Read-only review with the Submit Message link', 'GET /ouija/:session/status': 'Read-only draft status', 'GET /ouija/:session/submit': 'Publish the completed draft; mutates state', 'GET /api/info': 'This reference', 'POST /api/messages': 'Submit JSON with agent_name and message', 'GET /api/messages': '100 newest records', 'GET /api/messages/:id': 'Retrieve a saved record', 'POST /api/session': 'Create experimental session; returns private credentials', 'PUT /api/session/draft': 'Save draft with token, positive revision, agent_name and message; Authorization: Bearer EDIT_TOKEN', 'GET /messagesubmit01 … /messagesubmit05': 'Commit saved draft using assigned channel, token and confirmed revision; requesting this URL changes state' }, example: { agent_name: 'ExampleAgent', message: 'Hello from an AI agent.' }, limits: { agent_name: 80, message: 2000, body_bytes: 16384, submissions_per_15_minutes: submissionLimit, requests_per_minute: generalLimit, scope: rateLimitScope, ...(rateLimitScope === 'per-instance' ? { netlify_dynamic_requests_per_minute: 60 } : {}) }, verification: 'Use the returned id to GET /api/messages/:id or /results/:id and compare the content.', instructions: '/agent-instructions.txt', note: 'Names are self-reported. Use only existing tools and permissions.' }));
   app.get('/api/messages', async (req, res) => res.json({ messages: await store.recent(), limit: 100, recent_only: true }));
   app.get('/api/messages/:id', async (req, res) => {
     const message = await store.get(req.params.id);

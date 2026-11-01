@@ -1,9 +1,9 @@
 import { createOuija } from './ouija.js';
 import { ouijaInstructions } from './ouija-docs.js';
-import { boardHtml, draftProblem, frontier, reviewHtml } from './ouija-board.js';
+import { boardHtml, draftProblem, freshSessionPanel, frontier, reviewHtml } from './ouija-board.js';
 import { SessionError } from './sessions.js';
 import { escapeHtml, layout } from './views.js';
-import { ouijaBoardMarker, ouijaStartHref } from './ouija-cache.js';
+import { freshSessionHref, ouijaBoardMarker, ouijaStartHref, recoveryResponseId } from './ouija-cache.js';
 import { classifyOuijaPath, createNavId, createResponseId, diagnosticsBlock, navIdFrom, writeAudit } from './ouija-diagnostics.js';
 
 export function ouijaPage(title, content) {
@@ -42,8 +42,16 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       status: fields.status,
       code: fields.code || '',
       mutation: fields.mutation || 'none',
-      result: fields.result || 'not_attempted'
+      result: fields.result || 'not_attempted',
+      recovery_of: fields.recovery_of || null
     });
+  }
+  function recoveryKind(session, explicit) {
+    if (explicit === 'blocked' || explicit === 'conflict' || explicit === 'continue') return explicit;
+    if (!session) return null;
+    if (session.state && session.state !== 'writing') return 'blocked';
+    const used = Number(session.name?.count || 0) + Number(session.message_buffer?.count || 0) > 0;
+    return used ? 'continue' : null;
   }
   async function runIdFor(path) {
     const token = tokenFrom(path);
@@ -68,7 +76,33 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       nextPosition
     });
     await commit(req, res, started, { ...fields, response_id: responseId, nav_id: navId, run_id: session?.experiment_run_id || fields.run_id || null, status: statusCode });
-    res.status(statusCode).send(ouijaPage(title, block + body(navId)));
+    const kind = recoveryKind(session, fields.recovery);
+    const panel = kind ? freshSessionPanel(freshSessionHref(responseId), kind) : '';
+    res.status(statusCode).send(ouijaPage(title, block + panel + body(navId)));
+  }
+  async function sendUnavailable(req, res, started, error, extra = {}) {
+    if (error.code) console.error('Ouija rejection', error.code, extra.route || classifyOuijaPath(req.path).route, extra.position ?? '');
+    const classified = classifyOuijaPath(req.path);
+    const recovery = error.status === 410 || error.status === 403 || error.code === 'OUIJA_STATE_CONFLICT' ? 'blocked' : error.code === 'OUIJA_POSITION_CONFLICT' ? 'conflict' : undefined;
+    await sendHtml(req, res, started, {
+      statusCode: error.status,
+      title: error.code || (error.status === 410 ? 'Ouija Session Expired' : 'Ouija Session Unavailable'),
+      session: extra.session || null,
+      nextLabel: 'Next position',
+      nextPosition: 'none',
+      audit: {
+        route: extra.route || classified.route,
+        buffer: extra.buffer,
+        position: extra.position,
+        expected_position: extra.expected_position,
+        code: error.code || '',
+        mutation: extra.mutation || 'none',
+        result: 'rejected',
+        run_id: extra.session?.experiment_run_id || null,
+        recovery
+      },
+      body: () => `<p id="ouija-error">${escapeHtml(error.message)}</p>`
+    });
   }
   app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `<h1>Ouija Protocol</h1><p>The preferred method is hyperlink navigation. <a href="${ouijaStartHref}">Start Session</a>. Following this link creates a new session; repeat requests create separate sessions. Do not construct URLs manually. Follow the actual hyperlinks provided by each page. Do not manually construct character URLs.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
   app.head(/^\/ouija\/.*/i, async (req, res) => {
@@ -95,7 +129,7 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       session,
       nextLabel: 'Next name position',
       nextPosition: position,
-      audit: { route: 'start', mutation: 'attempted', result: 'recorded', expected_position: position },
+      audit: { route: 'start', mutation: 'attempted', result: 'recorded', expected_position: position, recovery_of: recoveryResponseId(req.query) },
       body: nav => `<p>Session capability (private): <code id="ouija-capability">${session.token}</code></p><p>Private session path: <code>/ouija/${session.token}</code></p><p>Follow the character hyperlinks. Do not construct URLs manually. No cookies or JavaScript are needed. Do not share this page publicly. Repeating start creates another session.</p>${boardFor(session.token, session, 'name', position, '', nav)}`
     });
   });
@@ -125,7 +159,10 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
         audit: { route: 'finish-name', mutation: 'none', result: 'not_attempted', expected_position: position },
         body: nav => boardFor(req.params.token, session, 'message', position, '', nav)
       });
-    } catch (error) { return next(error); }
+    } catch (error) {
+      if (!(error instanceof SessionError)) return next(error);
+      return sendUnavailable(req, res, started, error, { route: 'finish-name' });
+    }
   });
   app.get('/ouija/:token/review', available, async (req, res, next) => {
     const started = Date.now();
@@ -154,7 +191,10 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
         audit: { route: 'review', mutation: 'none', result: 'not_attempted' },
         body: nav => reviewHtml(req.params.token, session, nav)
       });
-    } catch (error) { return next(error); }
+    } catch (error) {
+      if (!(error instanceof SessionError)) return next(error);
+      return sendUnavailable(req, res, started, error, { route: 'review' });
+    }
   });
   const writes = limiter(60_000, 120);
   for (const [route, buffer] of [['name', 'name'], ['char', 'message']]) {
@@ -166,8 +206,7 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       try { prior = await service.meta(req.params.token); }
       catch (error) {
         if (!(error instanceof SessionError)) return next(error);
-        await commit(req, res, started, { route: auditRoute, status: error.status, code: error.code || '', mutation: 'none', result: 'rejected', run_id: null, response_id: createResponseId(), nav_id: null });
-        return next(error);
+        return sendUnavailable(req, res, started, error, { route: auditRoute, buffer, position: classifyOuijaPath(req.path).position });
       }
       const expected = frontier(mode === 'name' ? prior.name : prior.message_buffer);
       try {
@@ -195,12 +234,12 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
             session,
             nextLabel: mode === 'name' ? 'Next name position' : 'Next message position',
             nextPosition: position,
-            audit: { route: auditRoute, buffer, position: classifyOuijaPath(req.path).position, expected_position: expected, code: error.code || '', mutation: error.status === 409 ? 'attempted' : 'none', result: 'rejected' },
+            audit: { route: auditRoute, buffer, position: classifyOuijaPath(req.path).position, expected_position: expected, code: error.code || '', mutation: error.status === 409 ? 'attempted' : 'none', result: 'rejected', recovery: error.code === 'OUIJA_POSITION_CONFLICT' ? 'conflict' : undefined },
             body: nav => `<p id="ouija-error">${escapeHtml(error.message)}</p>${boardFor(req.params.token, session, mode, position, '', nav)}`
           });
         } catch (inner) {
-          if (!res.locals.ouijaAudited) await commit(req, res, started, { route: auditRoute, status: error.status, code: error.code || '', mutation: 'none', result: 'rejected', run_id: prior.experiment_run_id, response_id: createResponseId(), nav_id: null });
-          return next(inner instanceof SessionError ? inner : error);
+          if (res.locals.ouijaAudited) return next(inner instanceof SessionError ? inner : error);
+          return sendUnavailable(req, res, started, inner instanceof SessionError ? inner : error, { route: auditRoute, buffer, session: prior, position: classifyOuijaPath(req.path).position });
         }
       }
     });
@@ -218,7 +257,10 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
         audit: { route: 'status', mutation: 'none', result: 'not_attempted' },
         body: () => `${sessionStatus(session)}${paths(req.params.token)}`
       });
-    } catch (error) { return next(error); }
+    } catch (error) {
+      if (!(error instanceof SessionError)) return next(error);
+      return sendUnavailable(req, res, started, error, { route: 'status' });
+    }
   });
   app.get('/ouija/:token/status.json', available, async (req, res, next) => {
     const started = Date.now();
@@ -227,7 +269,10 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       await commit(req, res, started, { route: 'status', status: 200, mutation: 'none', result: 'not_attempted', run_id: session.experiment_run_id, response_id: createResponseId(), nav_id: null });
       const { experiment_run_id, ...body } = session;
       res.json(body);
-    } catch (error) { return next(error); }
+    } catch (error) {
+      if (!(error instanceof SessionError)) return next(error);
+      return sendUnavailable(req, res, started, error, { route: 'status' });
+    }
   });
   app.get('/ouija/:token/submit', intentional, submissions, available, async (req, res, next) => {
     const started = Date.now();
@@ -246,8 +291,8 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       });
     } catch (error) {
       if (!(error instanceof SessionError)) return next(error);
-      if (!res.locals.ouijaAudited) await commit(req, res, started, { route: 'submit', status: error.status, code: error.code || '', mutation: 'attempted', result: 'rejected', run_id: prior?.experiment_run_id || null, response_id: createResponseId(), nav_id: null });
-      return next(error);
+      if (res.locals.ouijaAudited) return next(error);
+      return sendUnavailable(req, res, started, error, { route: 'submit', session: prior, mutation: 'attempted' });
     }
   });
 }
