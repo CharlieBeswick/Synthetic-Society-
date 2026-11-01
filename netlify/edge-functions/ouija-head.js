@@ -10,7 +10,9 @@ export default (request) => {
     status: 405,
     headers: {
       Allow: 'GET',
-      'Cache-Control': 'no-store, private',
+      'Cache-Control': 'private, no-store, no-cache, max-age=0, must-revalidate',
+      'CDN-Cache-Control': 'no-store',
+      'Netlify-CDN-Cache-Control': 'no-store',
       'Content-Security-Policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'",
       'Referrer-Policy': 'no-referrer',
       'X-Content-Type-Options': 'nosniff',

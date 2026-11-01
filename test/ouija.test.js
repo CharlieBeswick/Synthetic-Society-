@@ -35,7 +35,9 @@ async function start(get) {
   const response = await get('/ouija/start');
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /^text\/html; charset=utf-8$/i);
-  assert.match(response.headers.get('cache-control'), /no-store/);
+  assert.equal(response.headers.get('cache-control'), 'private, no-store, no-cache, max-age=0, must-revalidate');
+  assert.equal(response.headers.get('cdn-cache-control'), 'no-store');
+  assert.equal(response.headers.get('netlify-cdn-cache-control'), 'no-store');
   assert.match(response.headers.get('x-robots-tag'), /noindex/);
   assert.equal(response.headers.get('set-cookie'), null);
   const html = await response.text();
@@ -61,7 +63,7 @@ test('fresh client composes, publishes and verifies using GET only without heade
   assert.equal(landing.headers.get('x-robots-tag'), null);
   const landingHtml = await landing.text();
   assert.match(landingHtml, /GET-Only AI Communication/);
-  assert.match(landingHtml, /<a href="\/ouija\/start">Start Session<\/a>/);
+  assert.match(landingHtml, /<a href="\/ouija\/start\?v=phase13-hyperlink-board-2">Start Session<\/a>/);
   assert.match(landingHtml, /Do not construct URLs manually/);
   assert.match(landingHtml, /Follow the Start Session hyperlink/);
   assert.match(landingHtml, /Finish Name — Start Message/);
@@ -70,7 +72,7 @@ test('fresh client composes, publishes and verifies using GET only without heade
   const slashed = await get('/ouija/');
   assert.equal(slashed.status, 200);
   assert.equal(slashed.headers.get('x-robots-tag'), null);
-  assert.match(await slashed.text(), /<a href="\/ouija\/start">Start Session<\/a>/);
+  assert.match(await slashed.text(), /<a href="\/ouija\/start\?v=phase13-hyperlink-board-2">Start Session<\/a>/);
   const token = await start(get);
   await spell(get, token, 'name', 'ChatGPT');
   await spell(get, token, 'char', 'Hello from Ouija!');
@@ -267,6 +269,69 @@ test('SQLite migration preserves Phase 1.1 records and Ouija sessions survive re
     assert.equal(store.get('legacy').submission_method, 'session_get');
     assert.equal((await createOuija(store.sessions, store).submit(token)).id, row.id);
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('versioned session start is fresh, uncached and returns the hyperlink board', async t => {
+  const { get } = await fixture(t);
+  const cache = 'private, no-store, no-cache, max-age=0, must-revalidate';
+  const page = await (await get('/ouija')).text();
+  const startHref = link(page, 'Start Session');
+  assert.equal(startHref, '/ouija/start?v=phase13-hyperlink-board-2');
+  assert.match(page, /Follow the actual hyperlinks provided by each page/);
+  assert.match(page, /Do not manually construct character URLs/);
+  const first = await get(startHref, { redirect: 'manual' });
+  const second = await get(startHref, { redirect: 'manual' });
+  assert.equal(first.status, 200);
+  assert.equal(second.status, 200);
+  assert.equal(first.headers.get('location'), null);
+  assert.equal(second.headers.get('location'), null);
+  for (const response of [first, second]) {
+    assert.equal(response.headers.get('cache-control'), cache);
+    assert.equal(response.headers.get('cdn-cache-control'), 'no-store');
+    assert.equal(response.headers.get('netlify-cdn-cache-control'), 'no-store');
+  }
+  const html = await first.text();
+  const other = await second.text();
+  const token = tokenFrom(html);
+  assert.notEqual(token, tokenFrom(other));
+  assert.match(html, /id="ouija-protocol-version">Ouija Hyperlink Board — Phase 1\.3 \/ Build 2</);
+  assert.match(html, new RegExp(`<a href="/ouija/${token}/name/1/C">C</a>`));
+  assert.doesNotMatch(html, /Name: GET /);
+  const written = await get(link(html, 'C'), { redirect: 'manual' });
+  assert.equal(written.status, 200);
+  assert.equal(written.headers.get('location'), null);
+  assert.equal(written.headers.get('cache-control'), cache);
+  assert.equal(written.headers.get('netlify-cdn-cache-control'), 'no-store');
+  const next = await written.text();
+  assert.match(next, /Ouija Hyperlink Board — Phase 1\.3 \/ Build 2/);
+  assert.match(link(next, 'D'), new RegExp(`/ouija/${token}/name/2/D$`));
+  const messageBoard = await get(link(next, 'Finish Name — Start Message'));
+  assert.equal(messageBoard.status, 200);
+  assert.equal(messageBoard.headers.get('cache-control'), cache);
+  const review = await get(`/ouija/${token}/review`);
+  assert.equal(review.status, 400);
+  assert.equal(review.headers.get('cache-control'), cache);
+  assert.equal(review.headers.get('netlify-cdn-cache-control'), 'no-store');
+  const status = await get(`/ouija/${token}/status`);
+  assert.equal(status.status, 200);
+  assert.equal(status.headers.get('cache-control'), cache);
+  const statusJson = await get(`/ouija/${token}/status.json`);
+  assert.equal(statusJson.headers.get('cache-control'), cache);
+  assert.equal(statusJson.headers.get('cdn-cache-control'), 'no-store');
+  await messageBoard.text();
+  await review.text();
+  await status.text();
+  await statusJson.json();
+  const legacy = await get('/ouija/start', { redirect: 'manual' });
+  assert.equal(legacy.status, 200);
+  assert.equal(legacy.headers.get('location'), null);
+  assert.notEqual(tokenFrom(await legacy.text()), token);
+  assert.equal((await get(startHref, { method: 'HEAD' })).status, 405);
+  assert.equal((await get(startHref, { headers: { Purpose: 'prefetch' } })).status, 400);
+  const css = await get('/style.css');
+  assert.equal(css.headers.get('netlify-cdn-cache-control'), null);
+  assert.equal(css.headers.get('cdn-cache-control'), null);
+  await css.text();
 });
 
 test('hyperlink navigation from the homepage publishes without constructing character URLs', async t => {

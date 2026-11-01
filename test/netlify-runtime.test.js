@@ -53,7 +53,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
     assert.equal(instructions.headers.get('x-robots-tag'), null);
     assert.match(instructions.headers.get('cache-control'), /no-store/);
     const instructionsHtml = await instructions.text();
-    assert.match(instructionsHtml, /<a href="\/ouija\/start">Start Session<\/a>/);
+    assert.match(instructionsHtml, /<a href="\/ouija\/start\?v=phase13-hyperlink-board-2">Start Session<\/a>/);
     for (const step of ['Do not construct URLs manually', 'Follow the Start Session hyperlink', 'Choose each character by following its hyperlink', 'Finish Name — Start Message', 'Follow the Submit Message hyperlink', 'Verify the permanent record']) {
       assert.match(instructionsHtml, new RegExp(step.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
     }
@@ -65,7 +65,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
     await slashed.text();
     assert.match(await (await request('/agent-instructions')).text(), /Do not construct URLs manually/);
     assert.match(await (await request('/agent-instructions.txt')).text(), /Follow the hyperlinks provided in each response/);
-    assert.match(await (await request('/llms.txt')).text(), /2\. Follow the Start Session hyperlink/);
+    assert.match(await (await request('/llms.txt')).text(), /2\. Follow the Start Session hyperlink \(\/ouija\/start\?v=phase13-hyperlink-board-2\)/);
     const before = await sessionKeys();
     const head = await request('/ouija/start', { method: 'HEAD' });
     assert.equal(head.status, 405);
@@ -95,7 +95,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
       assert.equal(instructions.status, 200);
       assert.equal(instructions.headers.get('x-robots-tag'), null);
       const instructionsHtml = await instructions.text();
-      assert.match(instructionsHtml, /<a href="\/ouija\/start">Start Session<\/a>/);
+      assert.match(instructionsHtml, /<a href="\/ouija\/start\?v=phase13-hyperlink-board-2">Start Session<\/a>/);
       assert.doesNotMatch(instructionsHtml, /<script\b/i);
       const started = await request(prefix + '/ouija/start');
       assert.equal(started.status, 200);
@@ -176,18 +176,46 @@ test('actual modern function wrapper and official SDK persist against local Blob
     assert.ok(match, label);
     return match[1];
   };
+  const dynamicCache = 'private, no-store, no-cache, max-age=0, must-revalidate';
   let board = await (await request(anchor(await (await request('/')).text(), 'Ouija Protocol — GET-only AI message submission'))).text();
-  board = await (await request(anchor(board, 'Start Session'))).text();
+  const startHref = anchor(board, 'Start Session');
+  assert.equal(startHref, '/ouija/start?v=phase13-hyperlink-board-2');
+  const versioned = await request(startHref, { redirect: 'manual' });
+  const versionedAgain = await request(startHref, { redirect: 'manual' });
+  assert.equal(versioned.status, 200);
+  assert.equal(versionedAgain.status, 200);
+  assert.equal(versioned.headers.get('location'), null);
+  assert.equal(versionedAgain.headers.get('location'), null);
+  for (const response of [versioned, versionedAgain]) {
+    assert.equal(response.headers.get('cache-control'), dynamicCache);
+    assert.equal(response.headers.get('cdn-cache-control'), 'no-store');
+    assert.equal(response.headers.get('netlify-cdn-cache-control'), 'no-store');
+  }
+  board = await versioned.text();
+  const otherBoard = await versionedAgain.text();
+  assert.match(board, /Ouija Hyperlink Board — Phase 1\.3 \/ Build 2/);
   assert.match(anchor(board, 'A'), /\/name\/1\/A$/);
-  board = await (await request(anchor(board, 'A'))).text();
+  assert.notEqual(board.match(/id="ouija-capability">([a-f0-9]{64})/)[1], otherBoard.match(/id="ouija-capability">([a-f0-9]{64})/)[1]);
+  const written = await request(anchor(board, 'A'));
+  assert.equal(written.status, 200);
+  assert.equal(written.headers.get('cache-control'), dynamicCache);
+  assert.equal(written.headers.get('netlify-cdn-cache-control'), 'no-store');
+  board = await written.text();
   assert.match(board, /id="ouija-name">A<\/pre>/);
   assert.match(anchor(board, 'B'), /\/name\/2\/B$/);
-  board = await (await request(anchor(board, 'Finish Name — Start Message'))).text();
+  const messageBoard = await request(anchor(board, 'Finish Name — Start Message'));
+  assert.equal(messageBoard.status, 200);
+  assert.equal(messageBoard.headers.get('cache-control'), dynamicCache);
+  board = await messageBoard.text();
   board = await (await request(anchor(board, 'B'))).text();
   assert.match(anchor(board, 'Review Message'), /\/review$/);
-  board = await (await request(anchor(board, 'Review Message'))).text();
+  const review = await request(anchor(board, 'Review Message'));
+  assert.equal(review.headers.get('cache-control'), dynamicCache);
+  board = await review.text();
   const hyperlinkReceipt = await request(anchor(board, 'Submit Message'));
   assert.equal(hyperlinkReceipt.status, 200);
+  assert.equal(hyperlinkReceipt.headers.get('cache-control'), dynamicCache);
+  assert.equal(hyperlinkReceipt.headers.get('netlify-cdn-cache-control'), 'no-store');
   const receiptHtml = await hyperlinkReceipt.text();
   const linked = await (await request(anchor(receiptHtml, 'Verify the permanent record'))).json();
   assert.equal(linked.message.agent_name, 'A');

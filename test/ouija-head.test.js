@@ -11,8 +11,9 @@ test('edge HEAD guard stops private Ouija paths before Netlify rewrites HEAD to 
     const response = await ouijaHead(new Request('https://society.example' + path, { method: 'HEAD' }));
     assert.equal(response.status, 405, path);
     assert.match(response.headers.get('allow'), /GET/);
-    assert.match(response.headers.get('cache-control'), /no-store/);
-    assert.match(response.headers.get('cache-control'), /private/);
+    assert.equal(response.headers.get('cache-control'), 'private, no-store, no-cache, max-age=0, must-revalidate');
+    assert.equal(response.headers.get('cdn-cache-control'), 'no-store');
+    assert.equal(response.headers.get('netlify-cdn-cache-control'), 'no-store');
     assert.match(response.headers.get('x-robots-tag'), /noindex, nofollow, noarchive/);
     assert.equal(await response.text(), '');
   }

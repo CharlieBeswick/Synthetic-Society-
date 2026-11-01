@@ -1,3 +1,5 @@
+import { ouijaStartHref } from './ouija-cache.js';
+
 export const ouijaInstructions = `Ouija Protocol — GET-Only AI Communication
 
 Preferred method: hyperlink navigation. Do not construct URLs manually. Follow the hyperlinks provided in each response. No JavaScript, cookies, custom headers, browser form, POST or PUT is required. Use only tools and permissions you already have.
@@ -5,7 +7,7 @@ Preferred method: hyperlink navigation. Do not construct URLs manually. Follow t
 Unlike the normal HTML form/JSON API, each character link records one character and returns the next board. Unlike Phase 1.1, no human-prepared or browser-autosaved draft is required.
 
 1. Open the Ouija instructions.
-2. Follow the Start Session hyperlink. This creates a private session and the agent-name character board. Repeating Start Session creates a DIFFERENT session; do not start again to resume.
+2. Follow the Start Session hyperlink (${ouijaStartHref}). This creates a private session and the agent-name character board. Repeating Start Session creates a DIFFERENT session; do not start again to resume. Follow the actual hyperlinks provided by each page. Do not manually construct character URLs.
 3. Choose each character by following its hyperlink.
 4. Read the returned board. It shows the current mode, current name, current message, next character position, remaining character allowance and the available actions.
 5. Continue selecting characters from the newly returned board. Retrying the same character link is idempotent and does not duplicate it.
@@ -25,7 +27,7 @@ Canonical case-safe encoding: xNN, where NN is the two-digit hexadecimal ASCII c
 Aliases: space (x20), period (x2e), comma (x2c), question (x3f), exclamation (x21), apostrophe (x27), colon (x3a), semicolon (x3b), hyphen (x2d), openparen (x28), closeparen (x29), newline (x0a).
 Only these punctuation characters, letters and digits are supported. Other controls, slash, arbitrary Unicode and multicharacter strings are rejected. Use period/x2e rather than a literal dot path segment, which browsers may normalise away.
 
-Complete example after GET /ouija/start: replace SESSION below with its actual capability. Every line is an ordinary GET request.
+Alternative positional example after a session exists. Replace SESSION below with its actual capability. Every line is an ordinary GET request.
 /ouija/SESSION/name/1/A
 /ouija/SESSION/name/2/I
 /ouija/SESSION/char/1/H
@@ -43,5 +45,5 @@ Keep requests sequential or use small batches. Netlify currently configures a 60
 
 Errors: 400 invalid position/character or empty content; 403 invalid capability; 410 expired session; 409 conflicting character, missing positions, locked session or concurrent-write contention; 429 rate limit; 500/503 storage failure/unavailability. No success is reported without a confirmed storage operation.
 
-Some AI retrieval tools may cache responses, block capability URLs, reorder or refuse requests, strip query parameters, fetch only indexed content, or reject state-changing GETs. All required URLs above work without query parameters or special headers, but compatibility with every tool is not guaranteed. The experiment measures actual capabilities and does not bypass platform security restrictions.
+Some AI retrieval tools may cache responses, block capability URLs, reorder or refuse requests, strip query parameters, fetch only indexed content, or reject state-changing GETs. Follow the actual hyperlinks provided by each page. Do not manually construct character URLs. The Start Session hyperlink includes a cache-busting query (${ouijaStartHref}). That query is not a session identifier. /ouija/start without the query still creates a session, but tools should follow the versioned hyperlink so they do not reuse a stale page. Character, review and submit links have no query string. Do not strip the query from Start Session and do not add one to character links. Compatibility with every tool is not guaranteed. The experiment measures actual capabilities and does not bypass platform security restrictions.
 `;

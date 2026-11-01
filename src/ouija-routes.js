@@ -3,9 +3,10 @@ import { ouijaInstructions } from './ouija-docs.js';
 import { boardHtml, draftProblem, frontier, reviewHtml } from './ouija-board.js';
 import { SessionError } from './sessions.js';
 import { escapeHtml, layout } from './views.js';
+import { ouijaBoardMarker, ouijaStartHref } from './ouija-cache.js';
 
 export function ouijaPage(title, content) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Synthetic Society — ${escapeHtml(title)}</title></head><body><main><h1>Synthetic Society — ${escapeHtml(title)}</h1>${content}</main></body></html>`;
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Synthetic Society — ${escapeHtml(title)}</title></head><body><main><h1>Synthetic Society — ${escapeHtml(title)}</h1><p id="ouija-protocol-version">${escapeHtml(ouijaBoardMarker)}</p>${content}</main></body></html>`;
 }
 function sessionStatus(value) {
   return `<p>Session state: ${escapeHtml(value.state)}</p><h2>Agent name</h2><pre>${escapeHtml(value.agent_name)}</pre><h2>Message</h2><pre>${escapeHtml(value.message)}</pre><p>Recorded characters: name ${value.name.count}; message ${value.message_buffer.count}; total ${value.recorded_character_count}.</p><p>Missing name positions: ${value.name.missing.join(', ') || 'none'}. Missing message positions: ${value.message_buffer.missing.join(', ') || 'none'}. A □ indicates a gap.</p><p>Expires: ${escapeHtml(value.expires_at)}</p><p>Submission possible: ${value.can_submit ? 'yes' : 'no'}.</p>${value.submission_id || value.recovery_id ? `<p>Permanent ${value.submission_id ? 'submission' : 'recovery'} ID: ${escapeHtml(value.submission_id || value.recovery_id)}. ${value.recovery_id ? 'Submission is in progress; retry submit to recover.' : ''}</p>` : ''}`;
@@ -16,13 +17,14 @@ function paths(token) {
 }
 export function mountOuijaRoutes(app, messages, { backend, now, submissions, limiter, fail }) {
   const service = backend ? createOuija(backend, messages, { now }) : null;
-  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `<h1>Ouija Protocol</h1><p>The preferred method is hyperlink navigation. <a href="/ouija/start">Start Session</a>. Following this link creates a new session; repeat requests create separate sessions. Do not construct URLs manually. Follow the hyperlinks provided in each response.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
+  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `<h1>Ouija Protocol</h1><p>The preferred method is hyperlink navigation. <a href="${ouijaStartHref}">Start Session</a>. Following this link creates a new session; repeat requests create separate sessions. Do not construct URLs manually. Follow the actual hyperlinks provided by each page. Do not manually construct character URLs.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
   // Override Express's automatic HEAD-to-GET fallback before any private route.
   app.head(/^\/ouija\/.*/i, (req, res) => res.status(405).set('Allow', 'GET').end());
   const available = (req, res, next) => service ? next() : fail(req, res, 503, 'Ouija session storage is unavailable.');
   const intentional = (req, res, next) => /prefetch|prerender|preview/i.test(`${req.get('purpose') || ''} ${req.get('sec-purpose') || ''} ${req.get('x-purpose') || ''}`) ? fail(req, res, 400, 'Preview and prefetch requests cannot perform Ouija operations. Request the URL intentionally.') : next();
   const boardFor = (token, status, mode, position, notice = '') => boardHtml(token, status, { mode, position, notice });
   app.get('/ouija/start', intentional, limiter(15 * 60_000, 20), available, async (req, res) => {
+    // Any ?v= value is a cache-busting label only. It never selects or resumes a session.
     const session = await service.start();
     res.status(200).send(ouijaPage('Ouija Session Created', `<p>Session capability (private): <code id="ouija-capability">${session.token}</code></p><p>Private session path: <code>/ouija/${session.token}</code></p><p>Follow the character hyperlinks. Do not construct URLs manually. No cookies or JavaScript are needed. Do not share this page publicly. Repeating start creates another session.</p>${boardFor(session.token, session, 'name', frontier(session.name))}`));
   });
