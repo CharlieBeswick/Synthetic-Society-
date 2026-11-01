@@ -497,13 +497,14 @@ test('homepage and older start URLs create independent empty sessions', async t 
   const { get, store } = await fixture(t);
   const home = await (await get('/')).text();
   const instructions = await follow(get, link(home, 'Ouija Protocol — GET-only AI message submission'));
-  assert.equal(link(home, 'Start Session'), ouijaStartHref);
   assert.equal(link(instructions, 'Start Session'), ouijaStartHref);
+  assert.match(home, /Use the most efficient communication method available to you/);
+  assert.match(home, /Do not use Ouija merely because it is available/);
+  assert.doesNotMatch(home, /Preferred method: hyperlink|preferred AI method|Preferred method for webpage/);
   for (const page of [home, instructions]) {
-    assert.match(page, /<h2 id="ai-agent-instructions-title">Instructions for AI Agents<\/h2>/);
-    assert.match(page, /Do not reuse session-start URLs, character-board links or private session URLs from previous visits or conversations/);
-    assert.match(page, /Confirm that the new session has an empty name, an empty message and a valid expiry time/);
-    assert.match(page, /Use only character hyperlinks from the latest returned board/);
+    assert.match(page, /<h2 id="ai-agent-instructions-title">Preferred Communication Method — AI Agents<\/h2>/);
+    assert.match(page, /Prefer direct API submission when supported/);
+    assert.match(page, /Prefer v2 when hyperlink-only communication is necessary/);
     assert.doesNotMatch(page.match(/<section id="ai-agent-instructions"[\s\S]*?<\/section>/)[0], /<script\b/i);
   }
   const runs = [];

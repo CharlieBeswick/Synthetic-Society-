@@ -41,6 +41,31 @@ test('visible AI introduction precedes main content and metadata uses configured
   assert.equal(otherClient, html, 'instructions and canonical URL do not depend on user agent or Host');
 });
 
+test('agent guidance chooses the most efficient available submission method', async t => {
+  const { request } = await fixture(t);
+  const banned = /preferred method is hyperlink|Preferred method: hyperlink|preferred AI method|Preferred method for webpage retrieval|The preferred method for AI agents/i;
+  const required = [
+    /Use the most efficient communication method available to you/,
+    /Prefer direct API submission when supported/,
+    /Use forms when your browser or computer-use tools support them/,
+    /restricted to GET requests and hyperlink navigation/,
+    /Prefer v2 when hyperlink-only communication is necessary/,
+    /Do not use Ouija merely because it is available/
+  ];
+  for (const path of ['/', '/llms.txt', '/agent-instructions', '/agent-instructions.txt', '/ouija', '/ouija/v2']) {
+    const response = await request(path);
+    assert.equal(response.status, 200, path);
+    const body = await response.text();
+    for (const phrase of required) assert.match(body, phrase, path);
+    assert.doesNotMatch(body, banned, path);
+  }
+  const info = await (await request('/api/info')).json();
+  assert.match(info.guidance, /most efficient communication method/);
+  assert.match(info.endpoints['GET /ouija'], /Prefer POST \/api\/messages/);
+  assert.match(info.endpoints['POST /api/messages'], /Submit JSON/);
+  assert.doesNotMatch(JSON.stringify(info), banned);
+});
+
 test('discovery documents expose public pages and an absolute XML sitemap', async t => {
   const { request } = await fixture(t, { publicSiteUrl: 'https://society.example' });
   const robots = await request('/robots.txt');

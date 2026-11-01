@@ -91,7 +91,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
       const html = await home.text();
       const intro = html.match(/<section class="ai-intro"[\s\S]*?<\/section>/)[0];
       assert.match(intro, /<a href="\/ouija">Ouija Protocol — GET-only AI message submission<\/a>/);
-      assert.match(intro, /webpage retrieval tools/);
+      assert.match(intro, /only when you cannot submit a complete message/);
       assert.ok(html.indexOf(intro) < html.indexOf('<main'));
       const instructions = await request(prefix + '/ouija');
       assert.equal(instructions.status, 200);
