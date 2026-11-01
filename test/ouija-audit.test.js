@@ -186,6 +186,26 @@ test('the local audit command prints a run without its session capability', asyn
   assert.equal(result.stdout.includes(token), false);
 });
 
+test('the production audit command does not run or echo credentials when they are absent or rejected', () => {
+  const missing = spawnSync(process.execPath, ['scripts/ouija-audit.mjs', '--production', 'run_734c0a19c3fd'], {
+    env: { ...process.env, NETLIFY_AUTH_TOKEN: '', NETLIFY_SITE_ID: '', NETLIFY_BLOBS_CONTEXT: '' },
+    encoding: 'utf8'
+  });
+  assert.equal(missing.status, 1);
+  assert.equal(missing.stdout, '');
+  assert.match(missing.stderr, /NETLIFY_SITE_ID/);
+  assert.match(missing.stderr, /NETLIFY_AUTH_TOKEN/);
+  const secret = 'test-token-do-not-log';
+  const rejected = spawnSync(process.execPath, ['scripts/ouija-audit.mjs', '--production', 'run_734c0a19c3fd'], {
+    env: { ...process.env, NETLIFY_SITE_ID: '00000000-0000-0000-0000-000000000000', NETLIFY_AUTH_TOKEN: secret, NETLIFY_BLOBS_CONTEXT: '' },
+    encoding: 'utf8',
+    timeout: 20000
+  });
+  assert.notEqual(rejected.status, 0);
+  assert.equal(`${rejected.stdout}${rejected.stderr}`.includes(secret), false);
+  assert.equal(`${rejected.stdout}${rejected.stderr}`.includes('00000000-0000-0000-0000-000000000000'), false);
+});
+
 test('audit events survive a second Netlify handler invocation', async t => {
   const directory = mkdtempSync(join(tmpdir(), 'ouija-audit-blobs-'));
   const server = new BlobsServer({ directory, token: 'local-test-token' });

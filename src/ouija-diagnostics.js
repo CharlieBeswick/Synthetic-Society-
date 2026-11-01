@@ -53,8 +53,23 @@ export function buildAuditEvent(fields) {
     expected_position: Number.isInteger(fields.expected_position) ? fields.expected_position : null,
     mutation: fields.mutation === 'attempted' ? 'attempted' : 'none',
     result,
+    stale_nav: fields.stale_nav === true ? true : fields.stale_nav === false ? false : null,
     duration_ms: Number.isFinite(fields.duration_ms) ? Math.max(0, Math.round(fields.duration_ms)) : 0
   };
+}
+
+export function navigationAge(events, followedNavId) {
+  const followed = navIdFrom(followedNavId);
+  if (!followed) return null;
+  let origin = null;
+  let latest = null;
+  for (const event of events) {
+    if (!navIdFrom(event.nav_id)) continue;
+    if (!origin && event.nav_id === followed) origin = event;
+    latest = event;
+  }
+  if (!origin || !latest) return null;
+  return origin.nav_id !== latest.nav_id;
 }
 
 export function correlateEvents(events) {
@@ -117,7 +132,8 @@ export function formatRun(events) {
     event.nav_id ? `advertises ${event.nav_id}` : 'advertises -',
     event.followed_nav_id ? `followed ${event.followed_nav_id}` : 'followed -',
     event.origin_response_id ? `origin ${event.origin_response_id}` : 'origin -',
-    event.recovery_of ? `recovery ${event.recovery_of}` : 'recovery -'
+    event.recovery_of ? `recovery ${event.recovery_of}` : 'recovery -',
+    event.stale_nav === true ? 'stale yes' : event.stale_nav === false ? 'stale no' : 'stale -'
   ].join(' ')).join('\n');
 }
 

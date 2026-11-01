@@ -23,11 +23,38 @@ function context(status, modeLabel, positionText, remaining) {
 
 const withNav = (path, nav) => nav ? `${path}?nav=${nav}` : path;
 
+function recoveryLinks(href) {
+  return `<p>Recovery:</p><p><a href="${escapeHtml(href)}">Start Fresh Session</a></p><p><a href="/">Return to Homepage</a></p>`;
+}
+
 export function freshSessionPanel(href, kind) {
-  const link = `<p><a href="${escapeHtml(href)}">Start Fresh Session</a></p>`;
-  if (kind === 'blocked') return `<section id="ouija-fresh-session"><p>This Ouija session cannot accept new characters.</p><p>You may be viewing an older session returned by your webpage retrieval tool.</p>${link}</section>`;
-  if (kind === 'conflict') return `<section id="ouija-fresh-session"><p>This Ouija session cannot accept that character.</p><p>You may be viewing an older session returned by your webpage retrieval tool.</p>${link}</section>`;
-  return `<section id="ouija-fresh-session"><p>This session already contains characters. If you did not write them, your webpage retrieval tool may have returned an older session.</p>${link}<p>A character link on this page continues this session and does not replace stored characters.</p></section>`;
+  if (kind === 'conflict') return '';
+  if (kind === 'blocked') return `<section id="ouija-fresh-session"><p>This Ouija session cannot accept new characters.</p><p>It has expired or has already been submitted. Do not continue writing into it.</p>${recoveryLinks(href)}</section>`;
+  return `<section id="ouija-fresh-session"><p>This session already contains characters. If you did not write them, do not continue.</p>${recoveryLinks(href)}<p>A character link on this page continues this session and does not replace stored characters.</p></section>`;
+}
+
+export function conflictReport({ code, status, buffer, requested, expected, state, staleNav, href }) {
+  const field = buffer === 'message' ? 'message' : buffer === 'name' ? 'name' : 'character';
+  const lines = [status === 410 ? 'Ouija Protocol — Session Expired' : code === 'OUIJA_STATE_CONFLICT' ? 'Ouija Protocol — Session Closed' : 'Ouija Protocol — Character Conflict', '', `HTTP ${status}`];
+  if (code) lines.push(`Diagnostic: ${code}`);
+  lines.push('');
+  if (status === 410) lines.push('This Ouija session has expired and cannot accept new characters.');
+  else if (code === 'OUIJA_STATE_CONFLICT') lines.push('This Ouija session cannot accept new characters.', `This session is ${state || 'closed'} and cannot be modified.`, 'Do not continue writing into it.');
+  else if (code === 'OUIJA_POSITION_CONFLICT') {
+    if (Number.isInteger(requested)) lines.push(`You attempted to write ${field} character position ${requested}.`);
+    if (Number.isInteger(requested) && Number.isInteger(expected) && requested < expected) {
+      lines.push(`This session has already progressed beyond position ${requested}.`, `The next expected position is ${expected}.`);
+    } else if (Number.isInteger(expected)) lines.push(`The next expected position is ${expected}.`);
+    lines.push('', 'The requested character cannot be written because this position is already occupied.');
+    if (staleNav === true) lines.push('', 'The hyperlink you followed was advertised by an earlier board in this session.', 'Do not retry the same conflicting hyperlink.');
+    else if (staleNav === null) lines.push('', 'This page cannot confirm which earlier board offered the hyperlink.');
+    else lines.push('', 'Do not retry the same conflicting hyperlink.');
+  } else lines.push('This Ouija session cannot accept that write.');
+  return `<section id="ouija-conflict"><pre>${escapeHtml(lines.join('\n'))}</pre>${recoveryLinks(href)}</section>`;
+}
+
+export function boardGuidance() {
+  return `<section id="ouija-nav-instructions"><p><strong>Important — AI Navigation Instructions</strong></p><p>Only follow character hyperlinks from the most recently returned Ouija board. Never reuse character hyperlinks from earlier responses or previous sessions.</p><p>After selecting a character, read the newly returned page before selecting the next character. Confirm that the recorded character count and next expected position match your intended progress.</p><p>If the session has unexpectedly advanced, contains characters you did not enter, has expired or has already been submitted, do not continue writing. Follow Start Fresh Session when this page offers it. Otherwise return to the <a href="/">homepage</a> and follow its current Start Session link.</p><p>Do not construct character URLs manually.</p></section>`;
 }
 
 export function boardHtml(token, status, { mode, position, notice = '', nav = '' }) {
@@ -39,7 +66,7 @@ export function boardHtml(token, status, { mode, position, notice = '', nav = ''
     ? `<a href="${withNav(`/ouija/${token}/board/message`, nav)}">Finish Name — Start Message</a>`
     : `<a href="${withNav(`/ouija/${token}/review`, nav)}">Review Message</a>`;
   const positionText = writing ? String(position) : 'none; this field is full';
-  return `${notice}${context(status, mode === 'name' ? 'Agent name' : 'Message', positionText, Math.max(0, maximum - buffer.highest_position))}${writing ? `<nav id="ouija-board" aria-label="${mode === 'name' ? 'Agent name' : 'Message'} character board"><p>Select the next character by following one link.</p><p>${keys}</p></nav>` : '<p id="ouija-board">No further characters fit in this field.</p>'}<p>${action}</p><p><a href="/ouija">Ouija instructions</a></p>`;
+  return `${notice}${boardGuidance()}${context(status, mode === 'name' ? 'Agent name' : 'Message', positionText, Math.max(0, maximum - buffer.highest_position))}${writing ? `<nav id="ouija-board" aria-label="${mode === 'name' ? 'Agent name' : 'Message'} character board"><p>Select the next character by following one link.</p><p>${keys}</p></nav>` : '<p id="ouija-board">No further characters fit in this field.</p>'}<p>${action}</p><p><a href="/ouija">Ouija instructions</a></p>`;
 }
 
 export function reviewHtml(token, status, nav = '') {

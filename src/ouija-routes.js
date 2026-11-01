@@ -1,10 +1,10 @@
 import { createOuija } from './ouija.js';
 import { ouijaInstructions } from './ouija-docs.js';
-import { boardHtml, draftProblem, freshSessionPanel, frontier, reviewHtml } from './ouija-board.js';
+import { boardHtml, conflictReport, draftProblem, freshSessionPanel, frontier, reviewHtml } from './ouija-board.js';
 import { SessionError } from './sessions.js';
-import { escapeHtml, layout } from './views.js';
+import { agentGuidance, escapeHtml, layout } from './views.js';
 import { freshSessionHref, ouijaBoardMarker, ouijaStartHref, recoveryResponseId } from './ouija-cache.js';
-import { classifyOuijaPath, createNavId, createResponseId, diagnosticsBlock, navIdFrom, writeAudit } from './ouija-diagnostics.js';
+import { classifyOuijaPath, createNavId, createResponseId, diagnosticsBlock, isRunId, navIdFrom, navigationAge, writeAudit } from './ouija-diagnostics.js';
 
 export function ouijaPage(title, content) {
   return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Synthetic Society — ${escapeHtml(title)}</title></head><body><main><h1>Synthetic Society — ${escapeHtml(title)}</h1><p id="ouija-protocol-version">${escapeHtml(ouijaBoardMarker)}</p>${content}</main></body></html>`;
@@ -43,8 +43,14 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       code: fields.code || '',
       mutation: fields.mutation || 'none',
       result: fields.result || 'not_attempted',
-      recovery_of: fields.recovery_of || null
+      recovery_of: fields.recovery_of || null,
+      stale_nav: fields.stale_nav
     });
+  }
+  async function followedNavAge(runId, followed) {
+    if (!navIdFrom(followed) || !isRunId(runId) || typeof auditLog.events !== 'function') return null;
+    try { return navigationAge(await auditLog.events(runId), followed); }
+    catch (error) { console.error('Ouija audit read failed', error.name); return null; }
   }
   function recoveryKind(session, explicit) {
     if (explicit === 'blocked' || explicit === 'conflict' || explicit === 'continue') return explicit;
@@ -76,9 +82,10 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       nextPosition
     });
     await commit(req, res, started, { ...fields, response_id: responseId, nav_id: navId, run_id: session?.experiment_run_id || fields.run_id || null, status: statusCode });
+    const href = freshSessionHref(responseId);
     const kind = recoveryKind(session, fields.recovery);
-    const panel = kind ? freshSessionPanel(freshSessionHref(responseId), kind) : '';
-    res.status(statusCode).send(ouijaPage(title, block + panel + body(navId)));
+    const panel = kind ? freshSessionPanel(href, kind) : '';
+    res.status(statusCode).send(ouijaPage(title, block + panel + body(navId, href)));
   }
   async function sendUnavailable(req, res, started, error, extra = {}) {
     if (error.code) console.error('Ouija rejection', error.code, extra.route || classifyOuijaPath(req.path).route, extra.position ?? '');
@@ -101,10 +108,10 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
         run_id: extra.session?.experiment_run_id || null,
         recovery
       },
-      body: () => `<p id="ouija-error">${escapeHtml(error.message)}</p>`
+      body: (nav, href) => `${conflictReport({ code: error.code, status: error.status, buffer: extra.buffer, requested: extra.position, expected: extra.expected_position, state: extra.session?.state, staleNav: extra.staleNav, href })}<p id="ouija-error">${escapeHtml(error.message)}</p>`
     });
   }
-  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `<h1>Ouija Protocol</h1><p>The preferred method is hyperlink navigation. <a href="${ouijaStartHref}">Start Session</a>. Following this link creates a new session; repeat requests create separate sessions. Do not construct URLs manually. Follow the actual hyperlinks provided by each page. Do not manually construct character URLs.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
+  app.get('/ouija', (req, res) => res.send(layout('Ouija Protocol — GET-Only AI Communication', `${agentGuidance()}<h1>Ouija Protocol</h1><p>The preferred method is hyperlink navigation. <a href="${ouijaStartHref}">Start Session</a>. Following this link creates a new session; repeat requests create separate sessions. Do not construct URLs manually. Follow the actual hyperlinks provided by each page. Do not manually construct character URLs.</p><section class="panel instruction-text">${escapeHtml(ouijaInstructions)}</section>`)));
   app.head(/^\/ouija\/.*/i, async (req, res) => {
     const started = Date.now();
     await commit(req, res, started, { status: 405, mutation: 'none', result: 'not_attempted', run_id: await runIdFor(req.path), response_id: createResponseId(), nav_id: null });
@@ -212,14 +219,15 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
       try {
         const value = await service.write(req.params.token, buffer, req.params.position, req.params.character);
         const position = value.position + 1;
-        const notice = `<p>${value.already_recorded ? 'Already recorded; no change.' : 'Saved successfully.'} Buffer: ${value.buffer}; position: ${value.position}; character: <code>${escapeHtml(JSON.stringify(value.character))}</code>.</p>`;
+        const staleNav = value.already_recorded ? await followedNavAge(value.experiment_run_id, req.query?.nav) : null;
+        const notice = `<p>${value.already_recorded ? 'Already recorded; no change.' : 'Saved successfully.'} Buffer: ${value.buffer}; position: ${value.position}; character: <code>${escapeHtml(JSON.stringify(value.character))}</code>.</p>${staleNav === true ? '<p>This hyperlink was advertised by an earlier board. The stored character was not changed. Continue only from the links on this page.</p>' : ''}`;
         await sendHtml(req, res, started, {
           statusCode: 200,
           title: value.already_recorded ? 'Character Already Recorded' : 'Character Recorded',
           session: value,
           nextLabel: mode === 'name' ? 'Next name position' : 'Next message position',
           nextPosition: position,
-          audit: { route: auditRoute, buffer, position: value.position, expected_position: expected, mutation: 'attempted', result: value.already_recorded ? 'idempotent' : 'recorded' },
+          audit: { route: auditRoute, buffer, position: value.position, expected_position: expected, mutation: 'attempted', result: value.already_recorded ? 'idempotent' : 'recorded', stale_nav: staleNav },
           body: nav => notice + boardFor(req.params.token, value, mode, position, '', nav)
         });
       } catch (error) {
@@ -228,14 +236,16 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
         try {
           const session = await service.meta(req.params.token);
           const position = frontier(mode === 'name' ? session.name : session.message_buffer);
+          const requested = classifyOuijaPath(req.path).position;
+          const staleNav = await followedNavAge(session.experiment_run_id, req.query?.nav);
           await sendHtml(req, res, started, {
             statusCode: error.status,
             title: error.code || 'Ouija Character Not Changed',
             session,
             nextLabel: mode === 'name' ? 'Next name position' : 'Next message position',
             nextPosition: position,
-            audit: { route: auditRoute, buffer, position: classifyOuijaPath(req.path).position, expected_position: expected, code: error.code || '', mutation: error.status === 409 ? 'attempted' : 'none', result: 'rejected', recovery: error.code === 'OUIJA_POSITION_CONFLICT' ? 'conflict' : undefined },
-            body: nav => `<p id="ouija-error">${escapeHtml(error.message)}</p>${boardFor(req.params.token, session, mode, position, '', nav)}`
+            audit: { route: auditRoute, buffer, position: requested, expected_position: expected, code: error.code || '', mutation: error.status === 409 ? 'attempted' : 'none', result: 'rejected', stale_nav: staleNav, recovery: error.code === 'OUIJA_POSITION_CONFLICT' || error.code === 'OUIJA_STATE_CONFLICT' ? 'conflict' : undefined },
+            body: (nav, href) => `${error.code === 'OUIJA_POSITION_CONFLICT' || error.code === 'OUIJA_STATE_CONFLICT' ? conflictReport({ code: error.code, status: error.status, buffer, requested, expected, state: session.state, staleNav, href }) : ''}<p id="ouija-error">${escapeHtml(error.message)}</p>${boardFor(req.params.token, session, mode, position, '', nav)}`
           });
         } catch (inner) {
           if (res.locals.ouijaAudited) return next(inner instanceof SessionError ? inner : error);

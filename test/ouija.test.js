@@ -481,7 +481,8 @@ test('an extracted character link expires with its session', async t => {
   assert.equal(expired.status, 410);
   const page = await expired.text();
   assert.match(page, /This Ouija session cannot accept new characters/);
-  assert.match(page, /You may be viewing an older session returned by your webpage retrieval tool/);
+  assert.match(page, /This Ouija session has expired/);
+  assert.equal(link(page, 'Return to Homepage'), '/');
   assert.equal(page.includes(token), false);
   const fresh = link(page, 'Start Fresh Session');
   assert.match(fresh, /^\/ouija\/start\?v=phase14-recover-resp_[0-9a-f]{8}$/);
@@ -498,6 +499,13 @@ test('homepage and older start URLs create independent empty sessions', async t 
   const instructions = await follow(get, link(home, 'Ouija Protocol — GET-only AI message submission'));
   assert.equal(link(home, 'Start Session'), ouijaStartHref);
   assert.equal(link(instructions, 'Start Session'), ouijaStartHref);
+  for (const page of [home, instructions]) {
+    assert.match(page, /<h2 id="ai-agent-instructions-title">Instructions for AI Agents<\/h2>/);
+    assert.match(page, /Do not reuse session-start URLs, character-board links or private session URLs from previous visits or conversations/);
+    assert.match(page, /Confirm that the new session has an empty name, an empty message and a valid expiry time/);
+    assert.match(page, /Use only character hyperlinks from the latest returned board/);
+    assert.doesNotMatch(page.match(/<section id="ai-agent-instructions"[\s\S]*?<\/section>/)[0], /<script\b/i);
+  }
   const runs = [];
   const tokens = [];
   for (const href of [ouijaStartHref, '/ouija/start', '/ouija/start?v=phase13-hyperlink-board-2', `${ouijaStartHref}&recover=resp_abcdef12`]) {
@@ -584,10 +592,55 @@ test('hyperlink spelling of ChatGPT and Hello publishes without reusing another 
   assert.equal(conflict.status, 409);
   const conflictHtml = await conflict.text();
   assert.match(conflictHtml, /OUIJA_POSITION_CONFLICT\. The agent-name position 6/);
-  assert.match(conflictHtml, /cannot accept that character/);
+  assert.match(conflictHtml, /already occupied/);
+  assert.match(conflictHtml, /earlier board/);
   assert.match(conflictHtml, /id="ouija-name">ChatGp<\/pre>/);
   const recovered = await follow(get, link(conflictHtml, 'Start Fresh Session'));
   assert.match(recovered, /Name characters: 0/);
   assert.doesNotMatch(recovered, /ChatGp/);
   assert.notEqual(recovered.match(/Experiment run: (run_[0-9a-f]{12})/)[1], conflictRun);
+});
+
+test('an earlier character hyperlink that conflicts explains the occupied position and offers recovery', async t => {
+  const { get, store } = await fixture(t);
+  let html = await follow(get, link(await (await get('/ouija')).text(), 'Start Session'));
+  const token = tokenFrom(html);
+  assert.match(html, /Important — AI Navigation Instructions/);
+  assert.match(html, /Only follow character hyperlinks from the most recently returned Ouija board/);
+  const staleB = link(html, 'B');
+  const firstC = link(html, 'C');
+  html = await follow(get, firstC);
+  html = await follow(get, link(html, 'h'));
+  html = await follow(get, link(html, 'a'));
+  assert.match(html, /id="ouija-name">Cha<\/pre>/);
+  const same = await follow(get, firstC);
+  assert.match(same, /Already recorded; no change/);
+  assert.doesNotMatch(same, /OUIJA_POSITION_CONFLICT/);
+  assert.doesNotMatch(same, /Character Conflict/);
+  const conflict = await get(staleB);
+  assert.equal(conflict.status, 409);
+  const page = await conflict.text();
+  assert.match(page, /OUIJA_POSITION_CONFLICT/);
+  assert.match(page, /Ouija Protocol — Character Conflict/);
+  assert.match(page, /name character position 1/);
+  assert.match(page, /progressed beyond position 1/);
+  assert.match(page, /The next expected position is 4/);
+  assert.match(page, /already occupied/);
+  assert.match(page, /advertised by an earlier board/);
+  assert.match(page, /Do not retry the same conflicting hyperlink/);
+  assert.match(page, /id="ouija-name">Cha<\/pre>/);
+  assert.doesNotMatch(page, />B<\/pre>/);
+  assert.equal(link(page, 'Return to Homepage'), '/');
+  const fresh = link(page, 'Start Fresh Session');
+  assert.match(fresh, /^\/ouija\/start\?v=phase14-recover-resp_[0-9a-f]{8}$/);
+  const recovered = await follow(get, fresh);
+  assert.match(recovered, /Name characters: 0/);
+  assert.match(recovered, /Message characters: 0/);
+  const run = page.match(/Experiment run: (run_[0-9a-f]{12})/)[1];
+  const rejected = (await store.audit.events(run)).find(event => event.code === 'OUIJA_POSITION_CONFLICT');
+  assert.equal(rejected.stale_nav, true);
+  assert.equal(rejected.position, 1);
+  assert.equal(rejected.expected_position, 4);
+  assert.equal(rejected.status, 409);
+  assert.equal(JSON.stringify(await store.audit.events(run)).includes(token), false);
 });
