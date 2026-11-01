@@ -50,7 +50,7 @@ test('Blobs saves unique concurrent records, scans all pages and returns latest 
   const recent = await store.recent();
   assert.deepEqual(recent, rows.slice(-100).reverse());
   assert.ok(blobs.calls.pages > 2);
-  assert.equal(blobs.calls.reads, 100);
+  assert.equal(blobs.calls.reads, 135);
   assert.deepEqual(await store.get(rows[0].id), rows[0]);
   assert.equal(await store.get('unknown'), null);
   assert.equal(await store.get('1800000000000-00000000-0000-4000-8000-000000000000'), null);

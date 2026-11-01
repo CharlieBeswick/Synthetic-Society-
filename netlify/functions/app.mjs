@@ -2,6 +2,7 @@ import { getStore } from '@netlify/blobs';
 import { withLambda } from '@netlify/aws-lambda-compat';
 import { createBlobsStore } from '../../src/blobs-store.js';
 import { createNetlifyHandler } from '../../src/netlify-handler.js';
+import { blobsSessions } from '../../src/session-backends.js';
 
 let run;
 const invoke = withLambda(async (event, context) => {
@@ -12,13 +13,14 @@ const invoke = withLambda(async (event, context) => {
       // Resolve the SDK client using this invocation's context, not a cached token.
       run = createNetlifyHandler({
         add: (...args) => currentStore().add(...args),
+        putIfAbsent: record => currentStore().putIfAbsent(record),
         get: (...args) => currentStore().get(...args),
         recent: () => currentStore().recent()
-      });
+      }, process.env, blobsSessions(() => getStore({ name: `${process.env.BLOBS_STORE_NAME || 'synthetic-society-messages'}-sessions`, consistency: 'strong' })));
     }
     return await run(event, context);
   } catch (error) {
-    console.error('Netlify application initialization or invocation failed:', error);
+    console.error('Netlify application initialization or invocation failed:', error.name);
     return { statusCode: 503, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }, body: JSON.stringify({ success: false, error: 'Storage service is temporarily unavailable.' }) };
   }
 });

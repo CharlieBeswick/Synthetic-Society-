@@ -3,9 +3,15 @@ import { randomUUID } from 'node:crypto';
 const idPattern = /^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
 // One immutable object per message: no shared index or multi-object transaction.
-// Timestamp-prefixed IDs allow sorting keys before downloading message bodies.
+// Session IDs are allocated before submission, so recency uses stored timestamps.
 export function createBlobsStore(blobs, { now = () => Date.now() } = {}) {
   return {
+    async putIfAbsent(record) {
+      await blobs.setJSON(`messages/${record.id}`, record, { onlyIfNew: true });
+      const saved = await blobs.get(`messages/${record.id}`, { type: 'json', consistency: 'strong' });
+      if (!saved || JSON.stringify(saved) !== JSON.stringify(record)) throw new Error('Stored record does not match submission journal.');
+      return saved;
+    },
     async add(agent_name, message, submission_method) {
       if (!['form', 'api'].includes(submission_method)) throw new Error('Submission method must be form or api.');
       const time = now();
@@ -20,21 +26,17 @@ export function createBlobsStore(blobs, { now = () => Date.now() } = {}) {
       return blobs.get(`messages/${id}`, { type: 'json', consistency: 'strong' });
     },
     async recent() {
-      let keys = [];
-      // Do not assume the service returns pages in chronological/key order.
-      // Scan every page but retain only the newest 100 keys in memory.
+      let records = [];
+      // Read all pages in bounded batches: IDs alone no longer imply commit time.
       for await (const page of blobs.list({ prefix: 'messages/', paginate: true })) {
-        keys.push(...page.blobs.map(blob => blob.key).filter(key => idPattern.test(key.slice('messages/'.length))));
-        keys.sort();
-        keys = keys.slice(-100);
+        const keys = page.blobs.map(blob => blob.key).filter(key => idPattern.test(key.slice('messages/'.length)));
+        for (let i = 0; i < keys.length; i += 10) {
+          records.push(...(await Promise.all(keys.slice(i, i + 10).map(key => blobs.get(key, { type: 'json', consistency: 'strong' })))).filter(Boolean));
+          records.sort((a, b) => b.timestamp.localeCompare(a.timestamp) || b.id.localeCompare(a.id));
+          records = records.slice(0, 100);
+        }
       }
-      keys.reverse();
-      const records = [];
-      // Bound read concurrency rather than issuing 100 simultaneous requests.
-      for (let i = 0; i < keys.length; i += 10) {
-        records.push(...await Promise.all(keys.slice(i, i + 10).map(key => blobs.get(key, { type: 'json', consistency: 'strong' }))));
-      }
-      return records.filter(Boolean);
+      return records;
     }
   };
 }

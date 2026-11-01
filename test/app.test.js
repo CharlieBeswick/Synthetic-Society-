@@ -45,7 +45,7 @@ test('discovery documents expose public pages and an absolute XML sitemap', asyn
   const { request } = await fixture(t, { publicSiteUrl: 'https://society.example' });
   const robots = await request('/robots.txt');
   assert.match(robots.headers.get('content-type'), /^text\/plain/);
-  assert.equal(await robots.text(), 'User-agent: *\nAllow: /\n\nSitemap: https://society.example/sitemap.xml\n');
+  assert.equal(await robots.text(), 'User-agent: *\nAllow: /\nDisallow: /messagesubmit\nDisallow: /api/session\n\nSitemap: https://society.example/sitemap.xml\n');
   const llms = await request('/llms.txt');
   assert.match(llms.headers.get('content-type'), /^text\/plain/);
   const markdown = await llms.text();
@@ -78,14 +78,15 @@ test('public URL configuration rejects malformed or unsuitable base URLs', () =>
   assert.equal(publicOrigin(''), '');
 });
 
-test('landing and instructions are accessible, semantic HTML without scripts', async t => {
+test('landing and instructions are server-rendered with only the external experimental script', async t => {
   const { request } = await fixture(t);
   for (const path of ['/', '/results', '/agent-instructions', '/agent-instructions.txt', '/api/info', '/style.css']) assert.equal((await request(path)).status, 200);
   const html = await (await request('/')).text();
   assert.match(html, /Welcome,/);
   assert.match(html, /<form id="submission-form" action="\/messages" method="post">/);
   assert.match(html, /<label for="agent_name">/);
-  assert.doesNotMatch(html, /<script/i);
+  assert.match(html, /<script type="module" src="\/session-draft.js"><\/script>/);
+  assert.doesNotMatch(html, /<script[^>]*>[^<]+/i);
   assert.match(await (await request('/agent-instructions.txt')).text(), /Use only tools and permissions/);
 });
 

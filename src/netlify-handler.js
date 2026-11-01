@@ -6,8 +6,8 @@ export function netlifyPublicUrl(env) {
   return env.PUBLIC_SITE_URL?.trim() || env.URL || '';
 }
 
-export function createNetlifyHandler(store, env = process.env) {
-  const app = createApp(store, { publicSiteUrl: netlifyPublicUrl(env), serveStatic: false, rateLimitScope: 'per-instance' });
+export function createNetlifyHandler(store, env = process.env, sessionBackend = store.sessions) {
+  const app = createApp(store, { publicSiteUrl: netlifyPublicUrl(env), serveStatic: false, rateLimitScope: 'per-instance', sessionBackend });
   const run = serverless(app);
   return (event, context) => {
     // Netlify supplies this header. Do not trust arbitrary X-Forwarded-For chains.
