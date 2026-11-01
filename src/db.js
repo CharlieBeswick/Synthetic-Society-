@@ -2,7 +2,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { AUDIT_RETENTION_MS, AUDIT_ROW_CAP, correlateEvents, isRunId, summarizeRuns } from './ouija-diagnostics.js';
+import { AUDIT_RETENTION_MS, AUDIT_ROW_CAP, correlateEvents, isCompositionId, isRunId, summarizeRuns } from './ouija-diagnostics.js';
 
 export function openStore(path = process.env.DATABASE_PATH || './data/messages.sqlite') {
   if (path !== ':memory:') mkdirSync(dirname(resolve(path)), { recursive: true });
@@ -14,7 +14,7 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       agent_name TEXT NOT NULL CHECK(length(agent_name) BETWEEN 1 AND 80),
       message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 2000),
       timestamp TEXT NOT NULL,
-      submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form', 'api', 'unknown', 'session_get', 'ouija_get'))
+      submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form', 'api', 'unknown', 'session_get', 'ouija_get', 'ouija_get_v2'))
     );`);
   // Old records predate route tracking; do not infer how they were submitted.
   if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'submission_method')) {
@@ -27,13 +27,27 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
         sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
         agent_name TEXT NOT NULL CHECK(length(agent_name) BETWEEN 1 AND 80),
         message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 2000), timestamp TEXT NOT NULL,
-        submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form','api','unknown','session_get','ouija_get'))
+        submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form','api','unknown','session_get','ouija_get','ouija_get_v2'))
       );
       INSERT INTO messages_v12 SELECT sequence,id,agent_name,message,timestamp,submission_method FROM messages;
       DROP TABLE messages;
       ALTER TABLE messages_v12 RENAME TO messages;
       COMMIT;`);
   }
+  if (!db.prepare("SELECT sql FROM sqlite_master WHERE name='messages'").get().sql.includes("'ouija_get_v2'")) {
+    db.exec(`BEGIN IMMEDIATE;
+      CREATE TABLE messages_v2 (
+        sequence INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+        agent_name TEXT NOT NULL CHECK(length(agent_name) BETWEEN 1 AND 80),
+        message TEXT NOT NULL CHECK(length(message) BETWEEN 1 AND 2000), timestamp TEXT NOT NULL,
+        submission_method TEXT NOT NULL DEFAULT 'unknown' CHECK(submission_method IN ('form','api','unknown','session_get','ouija_get','ouija_get_v2'))
+      );
+      INSERT INTO messages_v2 SELECT sequence,id,agent_name,message,timestamp,submission_method FROM messages;
+      DROP TABLE messages;
+      ALTER TABLE messages_v2 RENAME TO messages;
+      COMMIT;`);
+  }
+  db.exec(`CREATE TABLE IF NOT EXISTS ouija_v2_claims (composition_id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   db.exec(`CREATE TABLE IF NOT EXISTS experimental_sessions (key TEXT PRIMARY KEY, value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS ouija_audit (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -58,6 +72,30 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
   const sessionRead = db.prepare('SELECT value,version FROM experimental_sessions WHERE key=?');
   const sessionCreate = db.prepare('INSERT INTO experimental_sessions(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING');
   const sessionSwap = db.prepare('UPDATE experimental_sessions SET value=?,version=version+1 WHERE key=? AND version=?');
+  const readClaim = db.prepare('SELECT value FROM ouija_v2_claims WHERE composition_id=?');
+  const insertClaim = db.prepare('INSERT INTO ouija_v2_claims(composition_id, value) VALUES(?,?)');
+  function claimOuijaV2(claim) {
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      const row = readClaim.get(claim.composition_id);
+      if (row) {
+        const existing = JSON.parse(row.value);
+        db.exec('COMMIT');
+        if (existing.state_hash !== claim.state_hash) return { outcome: 'different', record: existing.record };
+        insertOnce.run(existing.record.id, existing.record.agent_name, existing.record.message, existing.record.timestamp, existing.record.submission_method);
+        return { outcome: 'same', record: one.get(existing.record.id) };
+      }
+      insertOnce.run(claim.record.id, claim.record.agent_name, claim.record.message, claim.record.timestamp, claim.record.submission_method);
+      const saved = one.get(claim.record.id);
+      if (!saved || saved.agent_name !== claim.record.agent_name || saved.message !== claim.record.message || saved.submission_method !== claim.record.submission_method) throw new Error('Stored record does not match submission journal.');
+      insertClaim.run(claim.composition_id, JSON.stringify({ composition_id: claim.composition_id, state_hash: claim.state_hash, record: saved }));
+      db.exec('COMMIT');
+      return { outcome: 'created', record: saved };
+    } catch (error) {
+      try { db.exec('ROLLBACK'); } catch { /* the transaction may already be closed */ }
+      throw error;
+    }
+  }
   return {
     sessions: {
       read(key) { const row = sessionRead.get(key); return row ? { value: JSON.parse(row.value), etag: row.version } : null; },
@@ -68,14 +106,15 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
     },
     audit: {
       async append(event) {
-        insertAudit.run(event.run_id, event.at, event.response_id, event.nav_id, JSON.stringify(event));
+        const index = isRunId(event.run_id) ? event.run_id : isCompositionId(event.composition_id) ? event.composition_id : event.run_id;
+        insertAudit.run(index, event.at, event.response_id, event.nav_id, JSON.stringify(event));
         try {
           deleteExpired.run(new Date(Date.now() - AUDIT_RETENTION_MS).toISOString());
           if (countAudit.get().n > AUDIT_ROW_CAP) deleteOldest.run();
         } catch (error) { console.error('Ouija audit retention failed', error.name); }
       },
       async events(runId) {
-        if (!isRunId(runId)) return [];
+        if (!isRunId(runId) && !isCompositionId(runId)) return [];
         return correlateEvents(auditByRun.all(runId).map(row => JSON.parse(row.event)));
       },
       async summaries(limit = 50) {
@@ -96,6 +135,7 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
     },
     get: id => one.get(id),
     recent: () => recent.all(),
+    claimOuijaV2,
     close: () => db.close()
   };
 }

@@ -12,7 +12,12 @@ export const navIdFrom = value => isNavId(value) ? value : null;
 export const AUDIT_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 export const AUDIT_ROW_CAP = 2000;
 
-const routes = new Set(['start', 'name', 'message', 'finish-name', 'review', 'status', 'submit', 'other']);
+const routes = new Set(['start', 'name', 'message', 'finish-name', 'review', 'status', 'submit', 'v2-start', 'v2-name', 'v2-message', 'v2-review', 'v2-compose', 'v2-publish', 'other']);
+const results = new Set(['not_attempted', 'recorded', 'idempotent', 'rejected', 'rendered']);
+const phases = new Set(['name', 'message', 'review']);
+const stateHashOk = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+const publicationOk = value => typeof value === 'string' && /^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value);
+export const isCompositionId = value => typeof value === 'string' && /^cmp_[A-Za-z0-9_-]{22}$/.test(value);
 
 export function classifyOuijaPath(path) {
   const value = String(path || '');
@@ -25,6 +30,9 @@ export function classifyOuijaPath(path) {
   if (/^\/ouija\/[^/]+\/review\/?$/i.test(value)) return { route: 'review', buffer: null, position: null };
   if (/^\/ouija\/[^/]+\/status(?:\.json)?\/?$/i.test(value)) return { route: 'status', buffer: null, position: null };
   if (/^\/ouija\/[^/]+\/submit\/?$/i.test(value)) return { route: 'submit', buffer: null, position: null };
+  if (/^\/ouija\/v2\/start\/?$/i.test(value)) return { route: 'v2-start', buffer: null, position: null };
+  if (/^\/ouija\/v2\/publish\//i.test(value)) return { route: 'v2-publish', buffer: null, position: null };
+  if (/^\/ouija\/v2\/c\//i.test(value)) return { route: 'v2-compose', buffer: null, position: null };
   return { route: 'other', buffer: null, position: null };
 }
 
@@ -35,7 +43,8 @@ function safePosition(value) {
 export function buildAuditEvent(fields) {
   const route = routes.has(fields.route) ? fields.route : 'other';
   const buffer = fields.buffer === 'name' || fields.buffer === 'message' ? fields.buffer : null;
-  const result = ['not_attempted', 'recorded', 'idempotent', 'rejected'].includes(fields.result) ? fields.result : 'not_attempted';
+  const result = results.has(fields.result) ? fields.result : 'not_attempted';
+  const v2 = fields.protocol_version === 2;
   return {
     schema: 1,
     at: fields.at,
@@ -54,7 +63,17 @@ export function buildAuditEvent(fields) {
     mutation: fields.mutation === 'attempted' ? 'attempted' : 'none',
     result,
     stale_nav: fields.stale_nav === true ? true : fields.stale_nav === false ? false : null,
-    duration_ms: Number.isFinite(fields.duration_ms) ? Math.max(0, Math.round(fields.duration_ms)) : 0
+    duration_ms: Number.isFinite(fields.duration_ms) ? Math.max(0, Math.round(fields.duration_ms)) : 0,
+    ...(v2 ? {
+      protocol_version: 2,
+      composition_id: isCompositionId(fields.composition_id) ? fields.composition_id : null,
+      phase: phases.has(fields.phase) ? fields.phase : null,
+      state_hash: stateHashOk(fields.state_hash) ? fields.state_hash : null,
+      parent_state_hash: stateHashOk(fields.parent_state_hash) ? fields.parent_state_hash : null,
+      name_length: Number.isInteger(fields.name_length) && fields.name_length >= 0 && fields.name_length <= 80 ? fields.name_length : null,
+      message_length: Number.isInteger(fields.message_length) && fields.message_length >= 0 && fields.message_length <= 2000 ? fields.message_length : null,
+      publication_id: publicationOk(fields.publication_id) ? fields.publication_id : null
+    } : {})
   };
 }
 
@@ -105,14 +124,15 @@ export function diagnosticsBlock({ responseId, navId, runId, generated, created,
 export function summarizeRuns(events, limit = 50) {
   const runs = new Map();
   for (const event of events) {
-    if (!isRunId(event.run_id)) continue;
-    const row = runs.get(event.run_id) || { run_id: event.run_id, created: event.at, last_at: event.at, requests: 0, writes: 0, conflicts: 0, last_route: event.route, last_status: event.status, last_result: event.result };
+    const id = isRunId(event.run_id) ? event.run_id : isCompositionId(event.composition_id) ? event.composition_id : null;
+    if (!id) continue;
+    const row = runs.get(id) || { run_id: id, created: event.at, last_at: event.at, requests: 0, writes: 0, conflicts: 0, last_route: event.route, last_status: event.status, last_result: event.result };
     row.requests += 1;
     if (event.at < row.created) row.created = event.at;
     if (event.at >= row.last_at) { row.last_at = event.at; row.last_route = event.route; row.last_status = event.status; row.last_result = event.result; }
-    if (event.result === 'recorded' && (event.route === 'name' || event.route === 'message')) row.writes += 1;
+    if (event.result === 'recorded' && (event.route === 'name' || event.route === 'message' || event.route === 'v2-publish')) row.writes += 1;
     if (event.status === 409) row.conflicts += 1;
-    runs.set(event.run_id, row);
+    runs.set(id, row);
   }
   return [...runs.values()].sort((a, b) => b.last_at.localeCompare(a.last_at)).slice(0, limit);
 }
@@ -133,7 +153,8 @@ export function formatRun(events) {
     event.followed_nav_id ? `followed ${event.followed_nav_id}` : 'followed -',
     event.origin_response_id ? `origin ${event.origin_response_id}` : 'origin -',
     event.recovery_of ? `recovery ${event.recovery_of}` : 'recovery -',
-    event.stale_nav === true ? 'stale yes' : event.stale_nav === false ? 'stale no' : 'stale -'
+    event.stale_nav === true ? 'stale yes' : event.stale_nav === false ? 'stale no' : 'stale -',
+    event.protocol_version === 2 ? `protocol 2 composition ${event.composition_id || '-'} phase ${event.phase || '-'} hash ${event.state_hash || '-'} parent ${event.parent_state_hash || '-'} name_len ${event.name_length ?? '-'} message_len ${event.message_length ?? '-'} publication ${event.publication_id || '-'}` : 'protocol 1'
   ].join(' ')).join('\n');
 }
 

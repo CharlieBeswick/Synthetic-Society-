@@ -1,7 +1,7 @@
 import { getStore } from '@netlify/blobs';
 import { openStore } from '../src/db.js';
 import { blobsAudit } from '../src/session-backends.js';
-import { formatRun, isRunId } from '../src/ouija-diagnostics.js';
+import { formatRun, isCompositionId, isRunId } from '../src/ouija-diagnostics.js';
 
 const args = process.argv.slice(2);
 const production = args.includes('--production');
@@ -26,8 +26,8 @@ async function printRuns(audit, ids) {
     return;
   }
   for (const runId of ids) {
-    if (!isRunId(runId)) {
-      console.error('Run id must look like run_ followed by 12 hexadecimal characters.');
+    if (!isRunId(runId) && !isCompositionId(runId)) {
+      console.error('Pass a run id (run_ and 12 hex characters) or a v2 composition id (cmp_ and 22 URL-safe characters).');
       process.exitCode = 1;
       continue;
     }

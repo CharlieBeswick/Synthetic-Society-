@@ -16,7 +16,8 @@ const invoke = withLambda(async (event, context) => {
         add: (...args) => currentStore().add(...args),
         putIfAbsent: record => currentStore().putIfAbsent(record),
         get: (...args) => currentStore().get(...args),
-        recent: () => currentStore().recent()
+        recent: () => currentStore().recent(),
+        claimOuijaV2: claim => currentStore().claimOuijaV2(claim)
       }, process.env, blobsSessions(sessionBlobs), blobsAudit(sessionBlobs));
     }
     return await run(event, context);

@@ -1,5 +1,6 @@
 import express from 'express';
 import { mountOuijaRoutes, ouijaPage } from './ouija-routes.js';
+import { mountOuijaV2Routes } from './ouija-v2-routes.js';
 import { validMessage, validationError } from './validation.js';
 import { mountSessionRoutes } from './session-routes.js';
 import { SessionError } from './sessions.js';
@@ -7,10 +8,10 @@ import { rateLimit } from 'express-rate-limit';
 import { layout, home, recordCard, instructions, escapeHtml } from './views.js';
 import { publicOrigin, robots, sitemap, llms } from './discovery.js';
 import { freshSessionPanel } from './ouija-board.js';
-import { freshSessionHref, ouijaDynamicCacheControl, ouijaStartHref } from './ouija-cache.js';
+import { freshSessionHref, ouijaDynamicCacheControl, ouijaStartHref, ouijaV2FreshHref } from './ouija-cache.js';
 import { classifyOuijaPath, createResponseId, diagnosticsBlock, navIdFrom, writeAudit } from './ouija-diagnostics.js';
 
-const privateOuijaPath = path => /^\/ouija\/.+/i.test(path);
+const privateOuijaPath = path => /^\/ouija\/.+/i.test(path) && !/^\/ouija\/v2\/?$/i.test(path);
 
 export function createApp(store, { trustProxy = false, submissionLimit = 20, generalLimit = 300, publicSiteUrl = '', serveStatic = true, staticDirectory = 'public', rateLimitScope = 'single-process', sessionBackend = store.sessions, sessionNow, chooseSlot, auditLog = store.audit } = {}) {
   const origin = publicOrigin(publicSiteUrl);
@@ -30,6 +31,9 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   function fail(req, res, status, error) {
     const responseId = createResponseId();
     const send = () => {
+      if (privateOuijaPath(req.path) && req.path.toLowerCase().startsWith('/ouija/v2/')) {
+        return res.status(status).send(`<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Synthetic Society — Ouija v2 Request Unsuccessful</title></head><body><main><h1>Ouija Protocol v2</h1><p id="ouija-error">${escapeHtml(error)}</p><p><a href="${ouijaV2FreshHref(responseId)}">Start Fresh Composition</a></p><p><a href="/ouija/v2">Ouija Protocol v2 instructions</a></p><p><a href="/">Return to Homepage</a></p></main></body></html>`);
+      }
       if (privateOuijaPath(req.path)) {
         const code = typeof error === 'string' && /^OUIJA_[A-Z_]+\./.test(error) ? error.slice(0, error.indexOf('.')) : '';
         const kind = status === 410 || status === 403 || (status === 409 && code !== 'OUIJA_POSITION_CONFLICT') ? 'blocked' : code === 'OUIJA_POSITION_CONFLICT' ? 'conflict' : null;
@@ -86,6 +90,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     return message ? res.json({ success: true, message }) : fail(req, res, 404, 'Submission not found.');
   });
   mountOuijaRoutes(app, store, { backend: sessionBackend, now: sessionNow, submissions, limiter, fail, audit: auditLog });
+  mountOuijaV2Routes(app, store, { submissions, limiter, fail, audit: auditLog, now: clock });
   const sessions = mountSessionRoutes(app, store, { backend: sessionBackend, now: sessionNow, chooseSlot, submissions, limiter, fail });
   const requireType = type => (req, res, next) => req.is(type) ? next() : fail(req, res, 415, `Content-Type must be ${type}.`);
   async function submit(req, res) {

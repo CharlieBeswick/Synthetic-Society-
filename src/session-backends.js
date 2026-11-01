@@ -1,4 +1,4 @@
-import { AUDIT_RETENTION_MS, correlateEvents, isRunId, summarizeRuns } from './ouija-diagnostics.js';
+import { AUDIT_RETENTION_MS, correlateEvents, isCompositionId, isRunId, summarizeRuns } from './ouija-diagnostics.js';
 
 // SDK client supplied lazily so Netlify request context is never cached.
 export function blobsSessions(getBlobs) {
@@ -35,11 +35,12 @@ export function blobsAudit(getBlobs, { now = Date.now } = {}) {
   return {
     async append(event) {
       const stamp = String(event.at || '').replace(/\D/g, '') || String(now());
-      await getBlobs().setJSON(`ouija-audit/${event.run_id || 'legacy'}/${stamp}-${event.response_id}`, event, { onlyIfNew: true });
+      const folder = isRunId(event.run_id) ? event.run_id : isCompositionId(event.composition_id) ? event.composition_id : 'legacy';
+      await getBlobs().setJSON(`ouija-audit/${folder}/${stamp}-${event.response_id}`, event, { onlyIfNew: true });
       try { await sweep(); } catch (error) { console.error('Ouija audit retention failed', error.name); }
     },
     async events(runId) {
-      if (!isRunId(runId)) return [];
+      if (!isRunId(runId) && !isCompositionId(runId)) return [];
       const events = [];
       for await (const page of getBlobs().list({ prefix: `ouija-audit/${runId}/`, paginate: true })) {
         for (const blob of page.blobs) {

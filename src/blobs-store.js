@@ -37,6 +37,18 @@ export function createBlobsStore(blobs, { now = () => Date.now() } = {}) {
         }
       }
       return records;
+    },
+    async claimOuijaV2(claim) {
+      const key = `ouija-v2-claims/${claim.composition_id}`;
+      const { modified } = await blobs.setJSON(key, { composition_id: claim.composition_id, state_hash: claim.state_hash, record: claim.record }, { onlyIfNew: true });
+      if (!modified) {
+        let existing = null;
+        for (let attempt = 0; attempt < 5 && !existing; attempt += 1) existing = await blobs.get(key, { type: 'json', consistency: 'strong' });
+        if (!existing) throw new Error('Ouija v2 publication claim could not be read.');
+        if (existing.state_hash !== claim.state_hash) return { outcome: 'different', record: existing.record };
+        return { outcome: 'same', record: await this.putIfAbsent(existing.record) };
+      }
+      return { outcome: 'created', record: await this.putIfAbsent(claim.record) };
     }
   };
 }
