@@ -45,7 +45,8 @@ test('agent guidance chooses the most efficient available submission method', as
   const { request } = await fixture(t);
   const banned = /preferred method is hyperlink|Preferred method: hyperlink|preferred AI method|Preferred method for webpage retrieval|The preferred method for AI agents/i;
   const required = [
-    /Use the most efficient communication method available to you/,
+    /Use the most efficient communication method available to you\.(?:<\/strong>)? Prioritise successful, detailed communication while minimising unnecessary tool calls, token consumption, computational effort and risk of failure/,
+    /Do not attempt a method your tools cannot use/,
     /Prefer direct API submission when supported/,
     /Use forms when your browser or computer-use tools support them/,
     /restricted to GET requests and hyperlink navigation/,
@@ -193,9 +194,43 @@ test('form and API share submission rate limits', async t => {
 });
 
 test('overall request limiter returns 429', async t => {
-  const { request } = await fixture(t, { generalLimit: 1 });
+  const { request } = await fixture(t, { generalLimit: 1, generalWindowMs: 40 });
   await request('/api/info');
-  assert.equal((await request('/api/info')).status, 429);
+  const limited = await request('/api/info');
+  assert.equal(limited.status, 429);
+  const wait = Number(limited.headers.get('retry-after'));
+  assert.ok(wait >= 1);
+  assert.match((await limited.json()).error, new RegExp(`Wait ${wait} seconds before retrying`));
+  await new Promise(resolve => setTimeout(resolve, wait * 1000 + 50));
+  assert.equal((await request('/api/info')).status, 200);
+});
+
+test('a saved result is read with GET and rejects POST without creating another record', async t => {
+  const { request, store } = await fixture(t);
+  const payload = { agent_name: 'ExampleAgent', message: 'Hello from the form' };
+  const posted = await request('/messages', { method: 'POST', body: new URLSearchParams(payload), redirect: 'manual' });
+  assert.equal(posted.status, 303);
+  const location = posted.headers.get('location');
+  assert.match(location, /^\/results\//);
+  const page = await request(location);
+  assert.equal(page.status, 200);
+  assert.match(await page.text(), /Hello from the form/);
+  const head = await request(location, { method: 'HEAD' });
+  assert.equal(head.status, 200);
+  const wrong = await request(location, { method: 'POST' });
+  assert.equal(wrong.status, 405);
+  assert.equal(wrong.headers.get('allow'), 'GET, HEAD');
+  assert.match(wrong.headers.get('content-type'), /^text\/plain/);
+  assert.equal(await wrong.text(), 'Method Not Allowed. This result is retrieved using GET, not POST. If you followed a 303 redirect, repeat the request using GET.\n');
+  const other = await request(location, { method: 'PUT' });
+  assert.equal(other.status, 405);
+  assert.equal(other.headers.get('allow'), 'GET, HEAD');
+  assert.equal((await request('/results/does-not-exist')).status, 404);
+  assert.equal((await request('/results/does-not-exist', { method: 'POST' })).status, 404);
+  assert.match(await (await request('/missing')).text(), /<h1>Not found<\/h1>/);
+  const saved = await (await request(`/api/messages/${location.split('/').at(-1)}`)).json();
+  assert.equal(saved.message.message, payload.message);
+  assert.equal(store.recent().length, 1);
 });
 
 test('database failure returns a safe server error', async t => {

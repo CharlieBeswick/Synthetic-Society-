@@ -73,15 +73,15 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
         const entry = await read(token);
         const value = entry.value;
         if (Object.hasOwn(value[buffer], position)) {
-          if (value[buffer][position] !== character) fail(409, `OUIJA_POSITION_CONFLICT. The ${target} already contains a different character. Positions are immutable; start a new session to correct it. Follow a character link on the latest board instead of reusing an earlier link.`, 'OUIJA_POSITION_CONFLICT');
+          if (value[buffer][position] !== character) fail(409, `OUIJA_POSITION_CONFLICT. The ${target} already contains a different character. This character link refers to an earlier board position. Return to the latest successful board and choose the next character from that page. The stored draft was not changed.`, 'OUIJA_POSITION_CONFLICT');
           return { already_recorded: true, buffer, position, character, ...present(value) };
         }
-        if (value.state !== 'writing') fail(409, `OUIJA_STATE_CONFLICT. The ${target} was not recorded because the session is submitting or submitted. Retry submit for its receipt.`, 'OUIJA_STATE_CONFLICT');
+        if (value.state !== 'writing') fail(409, `OUIJA_STATE_CONFLICT. The ${target} was not recorded because the session is submitting or submitted. This session cannot accept new characters. Retry its submit link for the original receipt, or start a fresh session.`, 'OUIJA_STATE_CONFLICT');
         const time = now();
         const next = { ...value, [buffer]: { ...value[buffer], [position]: character }, last_activity: time, expires_at: time + duration };
         if (await backend.swap(entry.key, next, entry.etag)) return { already_recorded: false, buffer, position, character, ...present(next) };
       }
-      fail(409, `OUIJA_STORAGE_CONFLICT. The ${target} was not recorded because concurrent writes are busy. Retry this same character URL; no successful write is silently discarded.`, 'OUIJA_STORAGE_CONFLICT');
+      fail(409, `OUIJA_STORAGE_CONFLICT. The ${target} was not recorded because concurrent writes are busy. Wait briefly and retry this same character URL. No successful write is silently discarded.`, 'OUIJA_STORAGE_CONFLICT');
     },
     async meta(token) { return present((await read(token)).value); },
     async status(token) { return inspect((await read(token)).value); },
@@ -91,7 +91,7 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
         const value = entry.value;
         if (['submitting', 'submitted'].includes(value.state)) return finish(entry);
         const current = inspect(value);
-        if (current.name.missing.length || current.message_buffer.missing.length) fail(409, `Missing positions. Name: ${current.name.missing.join(', ') || 'none'}; message: ${current.message_buffer.missing.join(', ') || 'none'}. Inspect status and fill all gaps before submitting.`);
+        if (current.name.missing.length || current.message_buffer.missing.length) fail(409, `Missing positions. Name: ${current.name.missing.join(', ') || 'none'}; message: ${current.message_buffer.missing.join(', ') || 'none'}. The draft was not published. Return to the board and fill every gap before submitting.`);
         if (!validMessage(current.agent_name, current.message)) fail(400, validationError);
         const record = { id: value.message_id, agent_name: current.agent_name, message: current.message, timestamp: new Date(now()).toISOString(), submission_method: 'ouija_get' };
         if (await backend.swap(entry.key, { ...value, state: 'submitting', record }, entry.etag)) {
@@ -100,7 +100,7 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
           return finish({ key: entry.key, ...frozen });
         }
       }
-      fail(409, 'OUIJA_STORAGE_CONFLICT. Session changed concurrently. Finish all character writes, then retry submit.', 'OUIJA_STORAGE_CONFLICT');
+      fail(409, 'OUIJA_STORAGE_CONFLICT. Session changed concurrently. Finish all character writes, then retry the same submit link. Do not start a second session unless this one has expired.', 'OUIJA_STORAGE_CONFLICT');
     }
   };
 }

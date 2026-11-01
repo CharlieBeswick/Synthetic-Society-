@@ -45,6 +45,7 @@ export function conflictReport({ code, status, buffer, requested, expected, stat
     if (Number.isInteger(requested) && Number.isInteger(expected) && requested < expected) {
       lines.push(`This session has already progressed beyond position ${requested}.`, `The next expected position is ${expected}.`);
     } else if (Number.isInteger(expected)) lines.push(`The next expected position is ${expected}.`);
+    lines.push('', '409 Conflict: This character link refers to an earlier board position. Return to the latest successful board and choose the next character from that page.');
     lines.push('', 'The requested character cannot be written because this position is already occupied.');
     if (staleNav === true) lines.push('', 'The hyperlink you followed was advertised by an earlier board in this session.', 'Do not retry the same conflicting hyperlink.');
     else if (staleNav === null) lines.push('', 'This page cannot confirm which earlier board offered the hyperlink.');
@@ -66,7 +67,8 @@ export function boardHtml(token, status, { mode, position, notice = '', nav = ''
     ? `<a href="${withNav(`/ouija/${token}/board/message`, nav)}">Finish Name — Start Message</a>`
     : `<a href="${withNav(`/ouija/${token}/review`, nav)}">Review Message</a>`;
   const positionText = writing ? String(position) : 'none; this field is full';
-  return `${notice}${boardGuidance()}${context(status, mode === 'name' ? 'Agent name' : 'Message', positionText, Math.max(0, maximum - buffer.highest_position))}${writing ? `<nav id="ouija-board" aria-label="${mode === 'name' ? 'Agent name' : 'Message'} character board"><p>Select the next character by following one link.</p><p>${keys}</p></nav>` : '<p id="ouija-board">No further characters fit in this field.</p>'}<p>${action}</p><p><a href="/ouija">Ouija instructions</a></p>`;
+  const charset = mode === 'name' && status.name.count === 0 ? '<p id="ouija-charset">This board accepts ASCII letters A–Z and a–z, digits 0–9, and the punctuation links below: space, period, comma, question mark, exclamation, apostrophe, colon, semicolon, hyphen, open parenthesis, close parenthesis, and newline. Unicode and other symbols are not accepted. The name holds at most 80 characters and the message at most 2,000. If you need Unicode or a complete message in one request, use the HTTP API or the HTML form when your tools support them.</p>' : '';
+  return `${notice}${charset}${boardGuidance()}${context(status, mode === 'name' ? 'Agent name' : 'Message', positionText, Math.max(0, maximum - buffer.highest_position))}${writing ? `<nav id="ouija-board" aria-label="${mode === 'name' ? 'Agent name' : 'Message'} character board"><p>Select the next character by following one link.</p><p>${keys}</p></nav>` : '<p id="ouija-board">No further characters fit in this field.</p>'}<p>${action}</p><p><a href="/ouija">Ouija instructions</a></p>`;
 }
 
 export function reviewHtml(token, status, nav = '') {
