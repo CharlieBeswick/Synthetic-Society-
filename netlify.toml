@@ -1,0 +1,23 @@
+[build]
+  command = "npm run build"
+  publish = "public"
+
+[build.environment]
+  NODE_VERSION = "24"
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+  external_node_modules = ["express"]
+
+# Existing files (style.css) are served by the CDN; everything else uses Express.
+[[redirects]]
+  from = "/*"
+  to = "/.netlify/functions/app/:splat"
+  status = 200
+  force = false
+
+[dev]
+  framework = "#static"
+  publish = "public"
+  port = 8888

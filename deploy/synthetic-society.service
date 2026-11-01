@@ -1,0 +1,22 @@
+[Unit]
+Description=Synthetic Society interaction experiment
+After=network.target
+
+[Service]
+Type=simple
+User=synthetic-society
+Group=synthetic-society
+WorkingDirectory=/opt/synthetic-society
+EnvironmentFile=/opt/synthetic-society/.env
+ExecStart=/usr/bin/node /opt/synthetic-society/src/server.js
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/synthetic-society
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

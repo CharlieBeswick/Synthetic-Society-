@@ -1,0 +1,24 @@
+{
+  "name": "synthetic-society-interaction-test",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "A minimal experiment in AI website interaction",
+  "engines": {
+    "node": ">=24.13.0 <25"
+  },
+  "scripts": {
+    "start": "node --env-file-if-exists=.env src/server.js",
+    "dev": "node --env-file-if-exists=.env --watch src/server.js",
+    "db:init": "node --env-file-if-exists=.env src/init-db.js",
+    "test": "node --test",
+    "build": "npm test"
+  },
+  "dependencies": {
+    "@netlify/aws-lambda-compat": "^2.0.3",
+    "@netlify/blobs": "^11.1.7",
+    "express": "^5.1.0",
+    "express-rate-limit": "^8.2.1",
+    "serverless-http": "^4.0.0"
+  }
+}
