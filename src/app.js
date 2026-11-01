@@ -25,7 +25,10 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     next();
   });
   function fail(req, res, status, error) {
-    if (privateOuijaPath(req.path)) return res.status(status).send(ouijaPage('Ouija Request Unsuccessful', '<p>' + escapeHtml(error) + '</p><p><a href="/ouija">Protocol instructions</a></p>'));
+    if (privateOuijaPath(req.path)) {
+      const code = typeof error === 'string' && error.startsWith('OUIJA_') ? error.slice(0, error.indexOf('.')) : '';
+      return res.status(status).send(ouijaPage(code || 'Ouija Request Unsuccessful', `<p id="ouija-error">${escapeHtml(error)}</p><p><a href="/ouija">Protocol instructions</a></p>`));
+    }
     return req.path.startsWith('/api/') ? res.status(status).json({ success: false, error }) : res.status(status).send(layout('Request unsuccessful', `<section class="panel"><h1>Request unsuccessful</h1><p>${escapeHtml(error)}</p><a href="/">Return to the test</a></section>`));
   }
   const limiter = (windowMs, limit) => rateLimit({ windowMs, limit, standardHeaders: 'draft-8', legacyHeaders: false, handler: (req, res) => fail(req, res, 429, 'Too many requests. Please wait and follow the Retry-After header.') });
@@ -75,7 +78,10 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   app.use((req, res) => fail(req, res, 404, 'Page or endpoint not found.'));
   app.use((err, req, res, next) => {
     if (res.headersSent) return next(err);
-    if (err instanceof SessionError) return fail(req, res, err.status, err.message);
+    if (err instanceof SessionError) {
+      if (err.code) console.error('Ouija rejection', err.code);
+      return fail(req, res, err.status, err.message);
+    }
     const status = [400, 413, 415].includes(err.status) ? err.status : 500;
     if (status === 500) console.error('Request failed:', err.name);
     fail(req, res, status, { 400: 'Malformed request body.', 413: 'Request body is too large. Maximum size is 16 KiB.', 415: 'Unsupported request encoding.', 500: 'The server could not complete the request. Please try again later.' }[status]);

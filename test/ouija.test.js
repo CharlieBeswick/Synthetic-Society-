@@ -399,6 +399,75 @@ test('repeated, stale and speculative hyperlinks do not corrupt or duplicate a d
   assert.match(await isolated.text(), /id="ouija-name"><\/pre>/);
 });
 
+test('hyperlink spelling of ChatGPT records message H and names a stale-link 409', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'ouija-chatgpt-'));
+  const path = join(dir, 'db.sqlite');
+  const open = async () => {
+    const store = openStore(path);
+    const server = createApp(store, { submissionLimit: 100, generalLimit: 1000 }).listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    return { store, server, get: (href, options) => fetch(`http://127.0.0.1:${server.address().port}` + href, options) };
+  };
+  const close = async session => {
+    if (!session?.server) return;
+    const server = session.server;
+    const store = session.store;
+    session.server = null;
+    await new Promise(resolve => server.close(resolve));
+    store.close();
+  };
+  let session = await open();
+  try {
+    let html = await follow(session.get, link(await (await session.get('/ouija')).text(), 'Start Session'));
+    const staleNameH = link(html, 'H');
+    for (const character of 'ChatGPT') html = await follow(session.get, link(html, character));
+    assert.match(html, /id="ouija-name">ChatGPT<\/pre>/);
+    const finish = link(html, 'Finish Name — Start Message');
+    html = await follow(session.get, finish);
+    const repeated = await follow(session.get, finish);
+    assert.match(repeated, /Current mode: Message/);
+    assert.match(repeated, /Next character position: 1/);
+    assert.match(repeated, /name 7; message 0/);
+    const messageH = link(html, 'H');
+    const staleMessageA = link(html, 'A');
+    assert.match(messageH, /\/char\/1\/H$/);
+    assert.match(staleNameH, /\/name\/1\/H$/);
+    assert.equal((await session.get(messageH, { method: 'HEAD' })).status, 405);
+    assert.equal((await session.get(messageH, { headers: { Purpose: 'prefetch' } })).status, 400);
+    const conflict = await session.get(staleNameH);
+    assert.equal(conflict.status, 409);
+    const conflictHtml = await conflict.text();
+    assert.match(conflictHtml, /id="ouija-error">OUIJA_POSITION_CONFLICT\. The agent-name position 1/);
+    assert.match(conflictHtml, /id="ouija-name">ChatGPT<\/pre>/);
+    assert.match(conflictHtml, /id="ouija-message"><\/pre>/);
+    await close(session);
+    session = await open();
+    html = await follow(session.get, messageH);
+    assert.match(html, /id="ouija-message">H<\/pre>/);
+    assert.match(html, /Next character position: 2/);
+    assert.match(link(html, 'i'), /\/char\/2\/i$/);
+    const duplicate = await follow(session.get, messageH);
+    assert.match(duplicate, /Already recorded; no change/);
+    assert.match(duplicate, /id="ouija-message">H<\/pre>/);
+    const wrong = await session.get(staleMessageA);
+    assert.equal(wrong.status, 409);
+    assert.match(await wrong.text(), /OUIJA_POSITION_CONFLICT\. The message position 1/);
+    html = await follow(session.get, link(html, 'i'));
+    html = await follow(session.get, link(html, 'Exclamation'));
+    html = await follow(session.get, link(html, 'Review Message'));
+    assert.match(html, /id="ouija-name">ChatGPT<\/pre>/);
+    assert.match(html, /id="ouija-message">Hi!<\/pre>/);
+    html = await follow(session.get, link(html, 'Submit Message'));
+    const saved = await (await session.get(link(html, 'Verify the permanent record'))).json();
+    assert.equal(saved.message.agent_name, 'ChatGPT');
+    assert.equal(saved.message.message, 'Hi!');
+    assert.equal(saved.message.submission_method, 'ouija_get');
+  } finally {
+    await close(session);
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
 test('an extracted character link expires with its session', async t => {
   let now = 1800000000000;
   const { get } = await fixture(t, { sessionNow: () => now });

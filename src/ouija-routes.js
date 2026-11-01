@@ -49,9 +49,10 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
         res.status(200).send(ouijaPage(value.already_recorded ? 'Character Already Recorded' : 'Character Recorded', notice + boardHtml(req.params.token, value, { mode, position: value.position + 1 })));
       } catch (error) {
         if (!(error instanceof SessionError)) return next(error);
+        if (error.code) console.error('Ouija rejection', error.code, route, req.params.position);
         try {
           const status = await service.status(req.params.token);
-          res.status(error.status).send(ouijaPage('Ouija Character Not Changed', `<p>${escapeHtml(error.message)}</p>${boardFor(req.params.token, status, mode, frontier(mode === 'name' ? status.name : status.message_buffer))}`));
+          res.status(error.status).send(ouijaPage(error.code || 'Ouija Character Not Changed', `<p id="ouija-error">${escapeHtml(error.message)}</p>${boardFor(req.params.token, status, mode, frontier(mode === 'name' ? status.name : status.message_buffer))}`));
         } catch (inner) { return next(inner instanceof SessionError ? inner : error); }
       }
     });

@@ -5,7 +5,7 @@ import { validMessage, validationError } from './validation.js';
 
 export const aliases = Object.freeze({ space: ' ', period: '.', comma: ',', question: '?', exclamation: '!', apostrophe: "'", colon: ':', semicolon: ';', hyphen: '-', openparen: '(', closeparen: ')', newline: '\n' });
 const allowed = /^[A-Za-z0-9 .,?!':;()\-\n]$/;
-const fail = (status, message) => { throw new SessionError(status, message); };
+const fail = (status, message, code = '') => { throw new SessionError(status, message, code); };
 
 export function decodeCharacter(symbol) {
   if (typeof symbol !== 'string') fail(400, 'Unsupported character. Use a letter, digit, documented alias or xNN ASCII code.');
@@ -64,19 +64,20 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
       if (!['name', 'message'].includes(buffer) || !/^[1-9]\d{0,3}$/.test(String(positionText)) || Number(positionText) > maximum) fail(400, `Position must be an integer from 1 to ${maximum}, without leading zeros.`);
       const position = Number(positionText);
       const character = decodeCharacter(symbol);
+      const target = `${buffer === 'name' ? 'agent-name' : 'message'} position ${position}`;
       for (let attempt = 0; attempt < 8; attempt++) {
         const entry = await read(token);
         const value = entry.value;
         if (Object.hasOwn(value[buffer], position)) {
-          if (value[buffer][position] !== character) fail(409, 'Position already contains a different character. Positions are immutable; start a new session to correct it.');
+          if (value[buffer][position] !== character) fail(409, `OUIJA_POSITION_CONFLICT. The ${target} already contains a different character. Positions are immutable; start a new session to correct it. Follow a character link on the latest board instead of reusing an earlier link.`, 'OUIJA_POSITION_CONFLICT');
           return { already_recorded: true, buffer, position, character, ...inspect(value) };
         }
-        if (value.state !== 'writing') fail(409, 'Session is submitting or submitted; no new characters can be recorded. Retry submit for its receipt.');
+        if (value.state !== 'writing') fail(409, `OUIJA_STATE_CONFLICT. The ${target} was not recorded because the session is submitting or submitted. Retry submit for its receipt.`, 'OUIJA_STATE_CONFLICT');
         const time = now();
         const next = { ...value, [buffer]: { ...value[buffer], [position]: character }, last_activity: time, expires_at: time + duration };
         if (await backend.swap(entry.key, next, entry.etag)) return { already_recorded: false, buffer, position, character, ...inspect(next) };
       }
-      fail(409, 'Concurrent writes are busy. Retry this same character URL; no successful write is silently discarded.');
+      fail(409, `OUIJA_STORAGE_CONFLICT. The ${target} was not recorded because concurrent writes are busy. Retry this same character URL; no successful write is silently discarded.`, 'OUIJA_STORAGE_CONFLICT');
     },
     async status(token) { return inspect((await read(token)).value); },
     async submit(token) {
@@ -94,7 +95,7 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
           return finish({ key: entry.key, ...frozen });
         }
       }
-      fail(409, 'Session changed concurrently. Finish all character writes, then retry submit.');
+      fail(409, 'OUIJA_STORAGE_CONFLICT. Session changed concurrently. Finish all character writes, then retry submit.', 'OUIJA_STORAGE_CONFLICT');
     }
   };
 }

@@ -6,7 +6,7 @@ const duration = 15 * 60_000;
 const hash = value => createHash('sha256').update(value).digest('hex');
 const credential = value => typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 export class SessionError extends Error {
-  constructor(status, message) { super(message); this.status = status; }
+  constructor(status, message, code = '') { super(message); this.status = status; if (code) this.code = code; }
 }
 const fail = (status, message) => { throw new SessionError(status, message); };
 

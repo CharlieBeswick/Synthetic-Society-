@@ -221,7 +221,45 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(linked.message.agent_name, 'A');
   assert.equal(linked.message.message, 'B');
   assert.equal(linked.message.submission_method, 'ouija_get');
-  assert.equal((await (await request('/api/messages')).json()).messages.length, 5);
+  let spelled = await (await request(anchor(await (await request('/ouija')).text(), 'Start Session'))).text();
+  const staleNameH = anchor(spelled, 'H');
+  for (const character of 'ChatGPT') spelled = await (await request(anchor(spelled, character))).text();
+  assert.match(spelled, /id="ouija-name">ChatGPT<\/pre>/);
+  const finish = anchor(spelled, 'Finish Name — Start Message');
+  spelled = await (await request(finish)).text();
+  const repeatedFinish = await request(finish);
+  assert.equal(repeatedFinish.status, 200);
+  assert.match(await repeatedFinish.text(), /Current mode: Message[\s\S]*Next character position: 1[\s\S]*name 7; message 0/);
+  const messageH = anchor(spelled, 'H');
+  assert.match(messageH, /\/char\/1\/H$/);
+  assert.equal((await request(messageH, { method: 'HEAD' })).status, 405);
+  assert.equal((await request(messageH, { headers: { Purpose: 'prefetch' } })).status, 400);
+  const stale = await request(staleNameH);
+  assert.equal(stale.status, 409);
+  assert.match(await stale.text(), /OUIJA_POSITION_CONFLICT\. The agent-name position 1/);
+  const recordedH = await request(messageH);
+  assert.equal(recordedH.status, 200);
+  spelled = await recordedH.text();
+  assert.match(spelled, /id="ouija-message">H<\/pre>/);
+  assert.match(anchor(spelled, 'i'), /\/char\/2\/i$/);
+  const duplicateH = await request(messageH);
+  assert.equal(duplicateH.status, 200);
+  assert.match(await duplicateH.text(), /Already recorded; no change/);
+  const token = messageH.match(/\/ouija\/([a-f0-9]{64})\//)[1];
+  const persisted = await freshHandler(new Request(`https://sdk-test.example/ouija/${token}/status.json`), context);
+  const persistedStatus = await persisted.json();
+  assert.equal(persistedStatus.agent_name, 'ChatGPT');
+  assert.equal(persistedStatus.message, 'H');
+  spelled = await (await request(anchor(spelled, 'i'))).text();
+  spelled = await (await request(anchor(spelled, 'Exclamation'))).text();
+  spelled = await (await request(anchor(spelled, 'Review Message'))).text();
+  const chatgptReceipt = await request(anchor(spelled, 'Submit Message'));
+  assert.equal(chatgptReceipt.status, 200);
+  const chatgptSaved = await (await request(anchor(await chatgptReceipt.text(), 'Verify the permanent record'))).json();
+  assert.equal(chatgptSaved.message.agent_name, 'ChatGPT');
+  assert.equal(chatgptSaved.message.message, 'Hi!');
+  assert.equal(chatgptSaved.message.submission_method, 'ouija_get');
+  assert.equal((await (await request('/api/messages')).json()).messages.length, 6);
   // Changing forwarding headers must not evade the instance's submission limit.
   for (let i = 0; i < 21; i++) {
     const response = await deployedHandler(new Request('https://sdk-test.example/api/messages', {
