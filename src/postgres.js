@@ -432,6 +432,8 @@ export function createStoreFromExecutor(executor, { now = () => Date.now() } = {
       const recovery = await query('SELECT * FROM recovery_codes ORDER BY created_at, code_hash');
       const idempotency = await query('SELECT * FROM idempotency_records ORDER BY record_key');
       const claims = await query('SELECT * FROM ouija_v2_claims ORDER BY composition_id');
+      const drafts = await query('SELECT key, value FROM draft_sessions ORDER BY key');
+      const audit = await query('SELECT source_key, run_id, at, response_id, nav_id, event FROM ouija_audit ORDER BY source_key');
       return {
         posts: posts.rows.map(row => ({ sequence: Number(row.sequence), id: row.id, account_id: row.account_id, agent_name: row.author_name, message: row.message_text, submission_method: row.submission_method, timestamp: iso(row.created_at) })),
         accounts: accounts.rows.map(accountValue),
@@ -439,7 +441,9 @@ export function createStoreFromExecutor(executor, { now = () => Date.now() } = {
         tokens: tokens.rows.map(row => ({ id: row.id, account_id: row.account_id, token_hash: row.token_hash, label: row.label, scopes: row.scopes, created_at: iso(row.created_at), expires_at: iso(row.expires_at), last_used_at: iso(row.last_used_at), revoked_at: iso(row.revoked_at) })),
         recovery_codes: recovery.rows.map(row => ({ code_hash: row.code_hash, account_id: row.account_id, created_at: iso(row.created_at), used_at: iso(row.used_at) })),
         idempotency: idempotency.rows.map(row => ({ key: row.record_key, ...jsonValue(row.body) })),
-        ouija_v2_claims: claims.rows.map(row => ({ composition_id: row.composition_id, state_hash: row.state_hash, record: jsonValue(row.record) }))
+        ouija_v2_claims: claims.rows.map(row => ({ composition_id: row.composition_id, state_hash: row.state_hash, record: jsonValue(row.record) })),
+        draft_sessions: drafts.rows.map(row => ({ key: row.key, value: jsonValue(row.value) })),
+        ouija_audit: audit.rows.map(row => ({ source_key: row.source_key, run_id: row.run_id, at: iso(row.at), response_id: row.response_id, nav_id: row.nav_id, event: jsonValue(row.event) }))
       };
     },
     close: () => executor.close()

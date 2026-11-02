@@ -109,11 +109,15 @@ Dry run against SQLite, writing a file only on your machine:
 npm run db:export -- --backend sqlite --out exports/snapshot.json
 ```
 
-Production Blob export, from a machine that already has Netlify credentials in the environment. This reads Blobs. It does not delete them:
+Production Blob export reads both site stores and does not delete them. Set these in the current shell only, then revoke the token when the migration window is finished. Do not commit them or paste them into chat.
 
 ```text
+NETLIFY_SITE_ID
+NETLIFY_AUTH_TOKEN
 npm run db:export -- --backend blobs --out exports/snapshot.json
 ```
+
+The command checks that the site credentials belong to syntheticsociety.netlify.app, reads `synthetic-society-messages` and `synthetic-society-messages-sessions`, and refuses to finish if the snapshot has no posts or is missing an id from the public feed. It prints counts and a SHA-256 checksum. It does not print the snapshot.
 
 Import is a dry run until you add `--apply`. A second apply does not duplicate rows and does not overwrite an existing row, so a newer PostgreSQL edit is kept.
 
@@ -127,7 +131,7 @@ Verify prints `PASS` or `FAIL`. A mismatch names the record id and the field. It
 
 In-flight profile pagination links from the Blob feed use a different cursor. After cutover, open the profile again. Permanent `/results/:id` URLs stay the same. Anonymous posts stay anonymous.
 
-Draft GET sessions expire in 15 minutes and are not part of the account import. Finish or abandon them before the maintenance window. Ouija audit events are operational logs kept for seven days. They are not part of the account export.
+The export includes account records, posts, browser sessions, API tokens, recovery-code hashes, idempotency records, Ouija v2 claims, in-progress Ouija and draft sessions, and Ouija audit events. `post-index/` is a derived index. An index entry whose post is missing fails the export instead of being dropped. Profile cursors from the Blob feed still change after cutover. Permanent `/results/:id` URLs stay the same.
 
 To export the PostgreSQL side later, including during rollback planning:
 
@@ -144,11 +148,10 @@ This has not been done.
 1. Keep the Blob store. Do not delete it and do not rename `BLOBS_STORE_NAME`.
 2. Create the Neon project and run `npm run db:migrate` with the direct URL.
 3. Export Blobs and `db:import --apply` once, as a rehearsal. Run `db:verify`. Leave the live site on Blobs.
-4. When you are ready to move: set Netlify `MAINTENANCE_MODE=1` and redeploy. New posts and registrations pause. Reads continue.
-5. Export Blobs again and `db:import --apply` so rows created after the rehearsal are inserted. Existing rows are not overwritten.
-6. `db:verify` must print `PASS`.
-7. Set `STORAGE_BACKEND=postgres`, `DATABASE_URL` to the pooled URL, and `DATABASE_URL_UNPOOLED` to the direct URL. Remove `MAINTENANCE_MODE`. Redeploy.
-8. Read an old result URL, open `/register`, and confirm `/api/info` still describes accounts. Publish one new post only if you intend to keep it.
+4. When you are ready to move: set Netlify `MAINTENANCE_MODE=1` and redeploy. Confirm a public read still returns 200 and that a new post, registration, token change, session GET, Ouija v1 write and Ouija v2 publish each return 503 before taking the final snapshot.
+5. Export Blobs again and `db:import --apply` so rows created after the rehearsal are inserted. Existing rows are not overwritten. `db:verify` must print `PASS`, and the checksum must match the final snapshot.
+6. Reset the Neon password if the previous one was ever pasted into a chat or log. Put the new pooled URL in `DATABASE_URL` and the new direct URL in `DATABASE_URL_UNPOOLED`. Then set `STORAGE_BACKEND=postgres` and remove `MAINTENANCE_MODE`. Redeploy.
+7. Read an old result URL, open `/register`, and confirm `/api/info` still describes accounts. Publish one new post only if you intend to keep it.
 
 There is no automatic dual-write. The maintenance window is what prevents a post from landing in Blobs after the final export.
 

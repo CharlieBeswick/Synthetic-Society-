@@ -5,7 +5,7 @@ import { createApp } from '../src/app.js';
 import { applySchema, schemaStatus, splitSql } from '../src/postgres.js';
 import { createPgliteStore } from '../src/pglite-store.js';
 import { selectBackend } from '../src/storage.js';
-import { assertReportIsSafe, importSnapshot, snapshotFromBlobStores, snapshotFromIdentity, summarize, verifySnapshots } from '../src/transfer.js';
+import { assertReportIsSafe, assertSiteIdentity, importSnapshot, missingPublicPosts, snapshotFromBlobStores, snapshotFromIdentity, summarize, validateSnapshot, verifySnapshots } from '../src/transfer.js';
 
 async function database() {
   const store = await createPgliteStore();
@@ -176,9 +176,9 @@ test('import is repeatable, keeps anonymous history, and stops without corruptin
     identity: []
   });
   const stopped = await importSnapshot(store.executor, broken, { apply: true });
-  assert.equal(stopped.errors.length, 1);
-  assert.equal(stopped.errors[0].id, 'bad-extra');
-  assert.equal((await store.get('good-extra')).message, 'ok');
+  assert.equal(stopped.errors[0].code, 'INVALID');
+  assert.ok(stopped.problems.some(problem => problem.id === 'bad-extra' && problem.field === 'submission_method'));
+  assert.equal(await store.get('good-extra'), undefined);
   assert.equal(await store.get('bad-extra'), undefined);
   const added = await store.add('Writer', 'after import', 'api', 'account-1');
   assert.ok(added.id);
@@ -186,7 +186,27 @@ test('import is repeatable, keeps anonymous history, and stops without corruptin
   await store.close();
 });
 
-test('blob export builds the same snapshot shape without printing secrets', async () => {
+test('snapshot validation keeps every relationship and refuses a duplicate username', () => {
+  const snapshot = snapshotFromIdentity({
+    posts: [{ id: 'post-1', account_id: 'missing', agent_name: 'Guest', message: 'Hi', submission_method: 'api', timestamp: '2026-01-02T03:04:05.006Z' }],
+    identity: [
+      { key: 'username/writer', value: { id: 'account-1' } },
+      { key: 'account/account-1', value: account('account-1', 'writer') },
+      { key: 'account/account-2', value: account('account-2', 'writer') },
+      { key: 'custom/other', value: { id: 'x' } }
+    ]
+  });
+  assert.equal(snapshot.warnings.some(warning => warning.kind === 'username_claim'), false);
+  assert.equal(snapshot.warnings.some(warning => warning.field === 'unrecognized'), true);
+  const problems = validateSnapshot(snapshot);
+  assert.ok(problems.some(problem => problem.kind === 'usernames' && problem.field === 'duplicate'));
+  assert.ok(problems.some(problem => problem.kind === 'posts' && problem.field === 'account_id'));
+  assert.throws(() => assertSiteIdentity({ ssl_url: 'https://example.netlify.app' }), /production site/);
+  assert.equal(assertSiteIdentity({ ssl_url: 'https://syntheticsociety.netlify.app' }).url.includes('syntheticsociety.netlify.app'), true);
+  assert.deepEqual(missingPublicPosts(snapshot, [{ id: 'post-1' }, { id: 'post-2' }]), ['post-2']);
+});
+
+test('blob export includes drafts and audit without printing secrets', async () => {
   const records = new Map();
   const blobs = {
     async setJSON(key, value) { records.set(key, structuredClone(value)); },
@@ -197,11 +217,22 @@ test('blob export builds the same snapshot shape without printing secrets', asyn
   await blobs.setJSON('messages/post-1', { id: 'post-1', agent_name: 'Guest', message: 'Hello', timestamp: '2026-01-02T03:04:05.006Z', submission_method: 'api' });
   await blobs.setJSON('identity/account/account-1', account('account-1', 'writer'));
   await blobs.setJSON('ouija-v2-claims/comp-1', { composition_id: 'comp-1', state_hash: 'state-1', record: { id: 'post-1' } });
-  const snapshot = await snapshotFromBlobStores({ messages: blobs, identity: blobs });
+  await blobs.setJSON('post-index/account-1/1-post-1', { id: 'post-1' });
+  await blobs.setJSON('sessions/ouija-abc', { kind: 'ouija', state: 'writing', name: { 1: 'A' } });
+  await blobs.setJSON('ouija-audit/run_7f2a91c8d04e/1-resp', { at: '2026-01-02T03:04:05.006Z', response_id: 'resp_123', run_id: 'run_7f2a91c8d04e', nav_id: 'nav' });
+  const snapshot = await snapshotFromBlobStores({ messages: blobs, identity: blobs, sessions: blobs });
   assert.equal(summarize(snapshot).posts, 1);
   assert.equal(summarize(snapshot).accounts, 1);
-  assert.equal(summarize(snapshot).anonymous_posts, 1);
+  assert.equal(summarize(snapshot).draft_sessions, 1);
+  assert.equal(summarize(snapshot).ouija_audit, 1);
+  assert.equal(snapshot.warnings.length, 0);
   assert.equal(assertReportIsSafe(summarize(snapshot), ['scrypt$test-hash']), true);
+  const store = await database();
+  const imported = await importSnapshot(store.executor, snapshot, { apply: true });
+  assert.equal(imported.errors.length, 0, JSON.stringify(imported.errors));
+  const verified = verifySnapshots(snapshot, await store.exportRecords());
+  assert.equal(verified.status, 'PASS', JSON.stringify(verified.mismatches));
+  await store.close();
 });
 
 test('maintenance mode blocks writes and a database failure stays on this backend', async t => {
