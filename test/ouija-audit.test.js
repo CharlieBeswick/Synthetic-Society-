@@ -6,13 +6,9 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { once } from 'node:events';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { getStore } from '@netlify/blobs';
-import { BlobsServer } from '@netlify/blobs/server';
 import { openStore } from '../src/db.js';
 import { createApp } from '../src/app.js';
-import { blobsAudit, blobsSessions } from '../src/session-backends.js';
 import { createNetlifyHandler } from '../src/netlify-handler.js';
-import { createBlobsStore } from '../src/blobs-store.js';
 
 const link = (html, label) => {
   const match = html.match(new RegExp(`<a href="([^"]+)">${label.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}</a>`));
@@ -186,41 +182,28 @@ test('the local audit command prints a run without its session capability', asyn
   assert.equal(result.stdout.includes(token), false);
 });
 
-test('the production audit command does not run or echo credentials when they are absent or rejected', () => {
+test('the production audit command fails closed without a database URL and does not echo it', () => {
   const missing = spawnSync(process.execPath, ['scripts/ouija-audit.mjs', '--production', 'run_734c0a19c3fd'], {
-    env: { ...process.env, NETLIFY_AUTH_TOKEN: '', NETLIFY_SITE_ID: '', NETLIFY_BLOBS_CONTEXT: '' },
+    env: { ...process.env, DATABASE_URL: '', DATABASE_URL_UNPOOLED: '' },
     encoding: 'utf8'
   });
   assert.equal(missing.status, 1);
   assert.equal(missing.stdout, '');
-  assert.match(missing.stderr, /NETLIFY_SITE_ID/);
-  assert.match(missing.stderr, /NETLIFY_AUTH_TOKEN/);
-  const secret = 'test-token-do-not-log';
+  assert.match(missing.stderr, /DATABASE_URL/);
+  const secret = 'super-secret-password';
   const rejected = spawnSync(process.execPath, ['scripts/ouija-audit.mjs', '--production', 'run_734c0a19c3fd'], {
-    env: { ...process.env, NETLIFY_SITE_ID: '00000000-0000-0000-0000-000000000000', NETLIFY_AUTH_TOKEN: secret, NETLIFY_BLOBS_CONTEXT: '' },
+    env: { ...process.env, DATABASE_URL: `postgres://user:${secret}@127.0.0.1:1/none`, DATABASE_URL_UNPOOLED: '' },
     encoding: 'utf8',
     timeout: 20000
   });
   assert.notEqual(rejected.status, 0);
   assert.equal(`${rejected.stdout}${rejected.stderr}`.includes(secret), false);
-  assert.equal(`${rejected.stdout}${rejected.stderr}`.includes('00000000-0000-0000-0000-000000000000'), false);
 });
 
-test('audit events survive a second Netlify handler invocation', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'ouija-audit-blobs-'));
-  const server = new BlobsServer({ directory, token: 'local-test-token' });
-  const address = await server.start();
-  const previous = process.env.NETLIFY_BLOBS_CONTEXT;
-  process.env.NETLIFY_BLOBS_CONTEXT = Buffer.from(JSON.stringify({ siteID: 'audit-site', token: 'local-test-token', edgeURL: `http://127.0.0.1:${address.port}`, uncachedEdgeURL: `http://127.0.0.1:${address.port}` })).toString('base64');
-  t.after(async () => {
-    if (previous === undefined) delete process.env.NETLIFY_BLOBS_CONTEXT; else process.env.NETLIFY_BLOBS_CONTEXT = previous;
-    await server.stop();
-    rmSync(directory, { recursive: true, force: true });
-  });
-  const sessionBlobs = () => getStore({ name: 'synthetic-society-messages-sessions', consistency: 'strong' });
-  const messages = createBlobsStore(getStore({ name: 'synthetic-society-messages', consistency: 'strong' }));
-  const first = createNetlifyHandler(messages, { PUBLIC_SITE_URL: 'https://audit.example' }, blobsSessions(sessionBlobs), blobsAudit(sessionBlobs));
-  const second = createNetlifyHandler(messages, { PUBLIC_SITE_URL: 'https://audit.example' }, blobsSessions(sessionBlobs), blobsAudit(sessionBlobs));
+test('audit events survive a second Netlify handler invocation', async () => {
+  const store = openStore(':memory:');
+  const first = createNetlifyHandler(store, { PUBLIC_SITE_URL: 'https://audit.example' });
+  const second = createNetlifyHandler(store, { PUBLIC_SITE_URL: 'https://audit.example' });
   const context = { ip: '192.0.2.40' };
   const call = async (handler, path) => {
     const response = await handler({ httpMethod: 'GET', path, headers: { host: 'audit.example', 'x-nf-client-connection-ip': context.ip }, body: '', isBase64Encoded: false, queryStringParameters: null, requestContext: {} }, context);
@@ -234,7 +217,8 @@ test('audit events survive a second Netlify handler invocation', async t => {
   const status = await call(second, `/ouija/${token}/status`);
   assert.equal(status.statusCode, 200);
   assert.equal(field(status.body, 'Experiment run'), run);
-  const events = await blobsAudit(sessionBlobs).events(run);
+  const events = await store.audit.events(run);
+  store.close();
   const serialized = JSON.stringify(events);
   assert.equal(serialized.includes(token), false);
   assert.equal(events.some(event => event.route === 'start' && event.result === 'recorded'), true);

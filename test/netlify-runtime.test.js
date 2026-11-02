@@ -1,33 +1,40 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { getStore } from '@netlify/blobs';
-import { BlobsServer } from '@netlify/blobs/server';
-import deployedHandler from '../netlify/functions/app.mjs';
+import { openStore } from '../src/db.js';
+import { createNetlifyHandler } from '../src/netlify-handler.js';
 import { ouijaStartHref } from '../src/ouija-cache.js';
 const advertisedStart = new RegExp(ouijaStartHref.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
 
-test('actual modern function wrapper and official SDK persist against local Blobs server', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'society-blobs-sdk-'));
-  const server = new BlobsServer({ directory, token: 'local-test-token' });
-  const address = await server.start();
-  const previous = process.env.NETLIFY_BLOBS_CONTEXT;
-  const previousUrl = process.env.PUBLIC_SITE_URL;
-  process.env.PUBLIC_SITE_URL = 'https://sdk-test.example';
-  process.env.NETLIFY_BLOBS_CONTEXT = Buffer.from(JSON.stringify({ siteID: 'local-test-site', token: 'local-test-token', edgeURL: `http://127.0.0.1:${address.port}`, uncachedEdgeURL: `http://127.0.0.1:${address.port}` })).toString('base64');
-  t.after(async () => {
-    if (previous === undefined) delete process.env.NETLIFY_BLOBS_CONTEXT; else process.env.NETLIFY_BLOBS_CONTEXT = previous;
-    if (previousUrl === undefined) delete process.env.PUBLIC_SITE_URL; else process.env.PUBLIC_SITE_URL = previousUrl;
-    await server.stop();
-    rmSync(directory, { recursive: true, force: true });
-  });
-  const context = { ip: '192.0.2.23', requestId: 'test-request', site: { id: 'local-test-site', url: 'https://sdk-test.example' } };
-  const request = (path, options) => deployedHandler(new Request('https://sdk-test.example' + path, options), context);
+test('Netlify handler persists posts, sessions and Ouija through the function adapter', async t => {
+  const store = openStore(':memory:');
+  const env = { PUBLIC_SITE_URL: 'https://sdk-test.example' };
+  const run = createNetlifyHandler(store, env);
+  const freshRun = createNetlifyHandler(store, env);
+  t.after(() => store.close());
+  async function invoke(handler, path, options = {}) {
+    const url = new URL(path, 'https://sdk-test.example');
+    const headers = { host: 'sdk-test.example', 'x-nf-client-connection-ip': options.ip || '192.0.2.23' };
+    for (const [key, value] of Object.entries(options.headers || {})) headers[key.toLowerCase()] = value;
+    if (options.body instanceof URLSearchParams && !headers['content-type']) headers['content-type'] = 'application/x-www-form-urlencoded';
+    const response = await handler({
+      path: url.pathname,
+      httpMethod: options.method || 'GET',
+      headers,
+      body: options.body == null ? '' : String(options.body),
+      isBase64Encoded: false,
+      queryStringParameters: url.search ? Object.fromEntries(url.searchParams) : null,
+      requestContext: {}
+    }, {});
+    const body = response.isBase64Encoded ? Buffer.from(response.body, 'base64').toString() : (response.body || '');
+    const headerMap = Object.fromEntries(Object.entries(response.headers || {}).map(([key, value]) => [key.toLowerCase(), value]));
+    return { status: response.statusCode, headers: { get: name => headerMap[name.toLowerCase()] ?? null }, text: async () => body, json: async () => JSON.parse(body) };
+  }
+  const request = (path, options) => invoke(run, path, options);
+  const fresh = (path, options) => invoke(freshRun, path, options);
   const sessionKeys = async () => {
-    const listed = await getStore({ name: 'synthetic-society-messages-sessions', consistency: 'strong' }).list({ prefix: 'sessions/' });
-    return (listed.blobs || []).map(blob => blob.key);
+    const keys = [];
+    for await (const key of store.sessions.keys()) keys.push(key);
+    return keys;
   };
   await t.test('crawler rules allow public Ouija discovery and speculative requests do not create sessions', async () => {
     const robots = await request('/robots.txt');
@@ -130,8 +137,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(form.status, 303);
   assert.match(await (await request(form.headers.get('location'))).text(), /<strong>form<\/strong>/);
   // Simulate a newly loaded deployment entrypoint; store remains site-scoped.
-  const freshHandler = (await import('../netlify/functions/app.mjs?fresh-deployment')).default;
-  const afterReload = await freshHandler(new Request('https://sdk-test.example' + receipt.api_url), context);
+  const afterReload = await fresh(receipt.api_url);
   assert.equal((await afterReload.json()).message.message, 'Saved using official SDK');
   assert.match(await (await request('/sitemap.xml')).text(), /https:\/\/sdk-test.example\/results/);
   const sessionResponse = await request('/api/session', { method: 'POST' });
@@ -151,7 +157,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(new Set(receipts.map(row => row.id)).size, 1);
   assert.equal(receipts[0].submission_method, 'session_get');
   assert.equal(receipts[0].message, 'Draft 2');
-  const freshSessionResponse = await freshHandler(new Request('https://sdk-test.example' + trigger, { headers: { Accept: 'application/json' } }), context);
+  const freshSessionResponse = await fresh(trigger, { headers: { Accept: 'application/json' } });
   assert.equal((await freshSessionResponse.json()).id, receipts[0].id);
   assert.equal((await (await request('/api/messages')).json()).messages.length, 3);
   const started = await request('/.netlify/functions/app/ouija/start');
@@ -166,7 +172,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
     }
   }
   const ouijaPath = `/ouija/${capability}/submit`;
-  const ouijaReceipt = await freshHandler(new Request('https://sdk-test.example' + ouijaPath), context);
+  const ouijaReceipt = await fresh(ouijaPath);
   assert.equal(ouijaReceipt.status, 200);
   const ouijaId = (await ouijaReceipt.text()).match(/id="message-id">([^<]+)/)[1];
   const ouijaRecord = (await (await request('/api/messages/' + ouijaId)).json()).message;
@@ -248,7 +254,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal(duplicateH.status, 200);
   assert.match(await duplicateH.text(), /Already recorded; no change/);
   const token = messageH.match(/\/ouija\/([a-f0-9]{64})\//)[1];
-  const persisted = await freshHandler(new Request(`https://sdk-test.example/ouija/${token}/status.json`), context);
+  const persisted = await fresh(`/ouija/${token}/status.json`);
   const persistedStatus = await persisted.json();
   assert.equal(persistedStatus.agent_name, 'ChatGPT');
   assert.equal(persistedStatus.message, 'H');
@@ -264,9 +270,7 @@ test('actual modern function wrapper and official SDK persist against local Blob
   assert.equal((await (await request('/api/messages')).json()).messages.length, 6);
   // Changing forwarding headers must not evade the instance's submission limit.
   for (let i = 0; i < 21; i++) {
-    const response = await deployedHandler(new Request('https://sdk-test.example/api/messages', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-forwarded-for': `198.51.100.${i}`, 'x-nf-client-connection-ip': `198.51.100.${i}` }, body: '{}'
-    }), { ...context, ip: '192.0.2.99' });
+    const response = await request('/api/messages', { method: 'POST', ip: '192.0.2.99', headers: { 'content-type': 'application/json', 'x-forwarded-for': `198.51.100.${i}` }, body: '{}' });
     assert.equal(response.status, i < 20 ? 400 : 429);
   }
 });

@@ -4,7 +4,6 @@ import { once } from 'node:events';
 import { openStore } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { createAccounts } from '../src/identity.js';
-import { blobsIdentity } from '../src/session-backends.js';
 
 const limits = { submissionLimit: 100, generalLimit: 1000, registrationLimit: 100, loginLimit: 100 };
 
@@ -215,32 +214,3 @@ test('profile posts paginate and expired credentials stop working', async t => {
   assert.equal(registered.account.username, 'pager');
 });
 
-test('blob identity storage can register the same account contract', async t => {
-  const records = new Map();
-  const etags = new Map();
-  const blobs = {
-    async setJSON(key, value, options = {}) {
-      const etag = etags.get(key) || '"0"';
-      if (options.onlyIfNew && records.has(key)) return { modified: false };
-      if (options.onlyIfMatch && options.onlyIfMatch !== etag) return { modified: false };
-      records.set(key, structuredClone(value));
-      etags.set(key, `"${records.size}-${key.length}"`);
-      return { modified: true, etag: etags.get(key) };
-    },
-    async getWithMetadata(key) {
-      if (!records.has(key)) return null;
-      return { data: structuredClone(records.get(key)), etag: etags.get(key) };
-    },
-    async delete(key) { records.delete(key); etags.delete(key); },
-    async *list({ prefix }) {
-      yield { blobs: [...records.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key })) };
-    }
-  };
-  const accounts = createAccounts(blobsIdentity(() => blobs));
-  const created = await accounts.register(accountBody('blob_agent'), null);
-  assert.equal(created.account.username, 'blob_agent');
-  const session = await accounts.login('blob_agent', 'correct horse battery');
-  const auth = await accounts.authenticate(session.access_token);
-  assert.equal(auth.account.username, 'blob_agent');
-  t.after(() => {});
-});

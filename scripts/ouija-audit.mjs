@@ -1,6 +1,5 @@
-import { getStore } from '@netlify/blobs';
 import { openStore } from '../src/db.js';
-import { blobsAudit } from '../src/session-backends.js';
+import { createPostgresStore } from '../src/postgres.js';
 import { formatRun, isCompositionId, isRunId } from '../src/ouija-diagnostics.js';
 
 const args = process.argv.slice(2);
@@ -43,37 +42,15 @@ async function printRuns(audit, ids) {
 }
 
 if (production) {
-  const siteID = process.env.NETLIFY_SITE_ID || '';
-  const token = process.env.NETLIFY_AUTH_TOKEN || '';
-  if (!siteID || !token) {
-    console.error(`Production audit access is not configured.
-Set these variables in the current shell only. Do not commit them, put them in the repository, or paste them into chat.
-
-NETLIFY_SITE_ID
-  The Site ID for https://syntheticsociety.netlify.app/
-  Site configuration, then General, then Site details.
-
-NETLIFY_AUTH_TOKEN
-  A Netlify personal access token for the account that owns the site:
-  https://app.netlify.com/user/applications#personal-access-tokens
-  Create it for this lookup and revoke it afterwards.
-
-Optional BLOBS_STORE_NAME when production does not use synthetic-society-messages.
-The command reads only ouija-audit/<run id>/ in the sessions blob store. It does not read session records.
-
-PowerShell:
-  $env:NETLIFY_SITE_ID = '<site id>'
-  $env:NETLIFY_AUTH_TOKEN = '<personal access token>'
-  node scripts/ouija-audit.mjs --production run_734c0a19c3fd run_4ab67d3134ce
-  Remove-Item Env:NETLIFY_AUTH_TOKEN
-  Remove-Item Env:NETLIFY_SITE_ID`);
+  const connectionString = process.env.DATABASE_URL?.trim() || '';
+  if (!connectionString) {
+    console.error('Set DATABASE_URL to read Ouija audit events from PostgreSQL. Do not paste the connection string into chat.');
     process.exit(1);
   }
-  const name = `${process.env.BLOBS_STORE_NAME || 'synthetic-society-messages'}-sessions`;
-  console.error(`Reading ouija-audit entries from blob store ${name}.`);
-  const audit = blobsAudit(() => getStore({ name, siteID, token, consistency: 'strong' }));
-  try { await printRuns(audit, runIds); }
+  const store = createPostgresStore(connectionString, { serverless: true });
+  try { await printRuns(store.audit, runIds); }
   catch (error) { reportFailure(error); }
+  finally { await store.close(); }
 } else {
   const store = openStore();
   try {

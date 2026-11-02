@@ -2,17 +2,12 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { BlobsServer } from '@netlify/blobs/server';
 import { openStore } from '../src/db.js';
 import { createApp } from '../src/app.js';
+import { createNetlifyHandler } from '../src/netlify-handler.js';
 import { ouijaV2SigningKey } from '../src/ouija-v2-key.js';
 import { publicationId } from '../src/ouija-v2-state.js';
 import { v2Characters } from '../src/ouija-v2-state.js';
-import deployedHandler from '../netlify/functions/app.mjs';
-
 process.env.OUIJA_V2_SIGNING_KEY = 'ab'.repeat(32);
 const messageId = /^\d{13}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const labels = Object.fromEntries(v2Characters.map(character => [character.value, character.label]));
@@ -242,21 +237,17 @@ test('v2 publication ids are stable and production refuses to sign without a key
 });
 
 test('the Netlify function wrapper publishes a signed v2 snapshot once', async t => {
-  const directory = mkdtempSync(join(tmpdir(), 'ouija-v2-blobs-'));
-  const server = new BlobsServer({ directory, token: 'local-test-token' });
-  const address = await server.start();
-  const previousBlobs = process.env.NETLIFY_BLOBS_CONTEXT;
-  const previousSite = process.env.PUBLIC_SITE_URL;
-  process.env.PUBLIC_SITE_URL = 'https://v2-test.example';
-  process.env.NETLIFY_BLOBS_CONTEXT = Buffer.from(JSON.stringify({ siteID: 'v2-test-site', token: 'local-test-token', edgeURL: `http://127.0.0.1:${address.port}`, uncachedEdgeURL: `http://127.0.0.1:${address.port}` })).toString('base64');
-  t.after(async () => {
-    if (previousBlobs === undefined) delete process.env.NETLIFY_BLOBS_CONTEXT; else process.env.NETLIFY_BLOBS_CONTEXT = previousBlobs;
-    if (previousSite === undefined) delete process.env.PUBLIC_SITE_URL; else process.env.PUBLIC_SITE_URL = previousSite;
-    await server.stop();
-    rmSync(directory, { recursive: true, force: true });
-  });
-  const context = { ip: '192.0.2.40', requestId: 'v2', site: { id: 'v2-test-site', url: 'https://v2-test.example' } };
-  const request = (path, options) => deployedHandler(new Request('https://v2-test.example' + path, options), context);
+  const store = openStore(':memory:');
+  const run = createNetlifyHandler(store, { PUBLIC_SITE_URL: 'https://v2-test.example' });
+  t.after(() => store.close());
+  const request = async (path, options = {}) => {
+    const url = new URL(path, 'https://v2-test.example');
+    const headers = { host: 'v2-test.example', 'x-nf-client-connection-ip': '192.0.2.40' };
+    for (const [key, value] of Object.entries(options.headers || {})) headers[key.toLowerCase()] = value;
+    const response = await run({ path: url.pathname, httpMethod: options.method || 'GET', headers, body: options.body ? String(options.body) : '', isBase64Encoded: false, queryStringParameters: url.search ? Object.fromEntries(url.searchParams) : null, requestContext: {} }, {});
+    const body = response.isBase64Encoded ? Buffer.from(response.body, 'base64').toString() : (response.body || '');
+    return { status: response.statusCode, text: async () => body, json: async () => JSON.parse(body) };
+  };
   const home = await (await request('/')).text();
   let page = await (await request(link(home, 'Ouija Protocol v2 — Experimental Stateless Version'))).text();
   page = await (await request(link(page, 'Start New Composition'))).text();

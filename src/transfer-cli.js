@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { openStore } from './db.js';
 import { createPgExecutor, applySchema } from './postgres.js';
 import { databaseHost } from './storage.js';
-import { assertSiteIdentity, importSnapshot, missingPublicPosts, PRODUCTION_HOST, snapshotFromBlobStores, snapshotFromIdentity, summarize, validateSnapshot, verifySnapshots } from './transfer.js';
+import { importSnapshot, summarize, validateSnapshot, verifySnapshots } from './transfer.js';
 
 const [command, ...args] = process.argv.slice(2);
 const flag = name => {
@@ -23,50 +22,16 @@ function writeSnapshot(path, snapshot) {
   return sha256;
 }
 
-async function productionSite(siteID, token) {
-  const response = await fetch(`https://api.netlify.com/api/v1/sites/${encodeURIComponent(siteID)}`, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) throw new Error('Export stopped. Netlify did not accept the site credentials.');
-  return assertSiteIdentity(await response.json());
-}
-
 async function sourceSnapshot() {
-  const backend = flag('--backend') || 'sqlite';
-  if (backend === 'sqlite') {
-    const store = openStore(process.env.DATABASE_PATH || './data/messages.sqlite');
-    try { return snapshotFromIdentity(store.exportRecords()); } finally { store.close(); }
+  const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
+  if (!connectionString) throw new Error('Set DATABASE_URL before exporting PostgreSQL.');
+  const executor = createPgExecutor(connectionString);
+  try {
+    const { createStoreFromExecutor } = await import('./postgres.js');
+    return createStoreFromExecutor(executor).exportRecords();
+  } finally {
+    await executor.close();
   }
-  if (backend === 'blobs') {
-    const siteID = process.env.NETLIFY_SITE_ID || '';
-    const token = process.env.NETLIFY_AUTH_TOKEN || '';
-    if (!siteID || !token) throw new Error('Set NETLIFY_SITE_ID and NETLIFY_AUTH_TOKEN in this shell only. Do not commit them or paste them into chat.');
-    const site = await productionSite(siteID, token);
-    const { getStore } = await import('@netlify/blobs');
-    const name = process.env.BLOBS_STORE_NAME || 'synthetic-society-messages';
-    const options = { siteID, token, consistency: 'strong' };
-    const messages = getStore({ name, ...options });
-    const sessionStore = getStore({ name: `${name}-sessions`, ...options });
-    console.log(JSON.stringify({ source: site.url, stores: [name, `${name}-sessions`] }));
-    const snapshot = await snapshotFromBlobStores({ messages, identity: messages, sessions: sessionStore });
-    const listed = await fetch(`https://${PRODUCTION_HOST}/api/messages`);
-    if (!listed.ok) throw new Error('Export stopped. The public production feed could not be read.');
-    const missing = missingPublicPosts(snapshot, (await listed.json()).messages || []);
-    if (!snapshot.posts.length) throw new Error('Export stopped. The Blob snapshot contains no posts.');
-    if (missing.length) throw new Error(`Export stopped. ${missing.length} public post ids are missing from the Blob snapshot.`);
-    snapshot.source = { site: site.url, stores: [name, `${name}-sessions`], exported_at: new Date().toISOString() };
-    return snapshot;
-  }
-  if (backend === 'postgres') {
-    const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;
-    if (!connectionString) throw new Error('Set DATABASE_URL before exporting PostgreSQL.');
-    const executor = createPgExecutor(connectionString);
-    try {
-      const { createStoreFromExecutor } = await import('./postgres.js');
-      return createStoreFromExecutor(executor).exportRecords();
-    } finally {
-      await executor.close();
-    }
-  }
-  throw new Error('Export backend must be sqlite, blobs, or postgres.');
 }
 
 const connectionString = process.env.DATABASE_URL_UNPOOLED || process.env.DATABASE_URL;

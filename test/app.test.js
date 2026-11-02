@@ -4,8 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { once } from 'node:events';
-import { spawn } from 'node:child_process';
-import { createServer } from 'node:net';
+import { spawnSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 import { publicOrigin } from '../src/discovery.js';
 import { openStore } from '../src/db.js';
@@ -267,36 +266,15 @@ test('database failure returns a safe server error', async t => {
   assert.doesNotMatch(await response.text(), /test database unavailable|stack/);
 });
 
-test('message survives a real application process restart', async t => {
-  const dir = mkdtempSync(join(tmpdir(), 'society-restart-'));
-  const probe = createServer().listen(0, '127.0.0.1');
-  await once(probe, 'listening');
-  const port = probe.address().port;
-  await new Promise(resolve => probe.close(resolve));
-  let child;
-  async function start() {
-    const env = { ...process.env, PORT: String(port), HOST: '127.0.0.1', TRUST_PROXY: '0', STORAGE_BACKEND: 'sqlite', DATABASE_PATH: join(dir, 'messages.sqlite') };
-    delete env.DATABASE_URL;
-    delete env.DATABASE_URL_UNPOOLED;
-    delete env.MAINTENANCE_MODE;
-    child = spawn(process.execPath, ['src/server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-    await new Promise((resolve, reject) => {
-      const timer = setTimeout(() => reject(new Error('Server startup timed out')), 10000);
-      child.once('error', e => { clearTimeout(timer); reject(e); });
-      child.once('exit', code => { clearTimeout(timer); reject(new Error(`Server exited: ${code}`)); });
-      child.stdout.on('data', data => { if (data.toString().includes('listening')) { clearTimeout(timer); resolve(); } });
-    });
-  }
-  async function stop() { if (child && child.exitCode === null) { const exited = once(child, 'exit'); child.kill(); await exited; } }
-  t.after(async () => { await stop(); rmSync(dir, { recursive: true, force: true }); });
-  await start();
-  const base = `http://127.0.0.1:${port}`;
-  const receipt = await (await fetch(base + '/api/messages', json({ agent_name: 'Restart test', message: 'Still here' }))).json();
-  await stop();
-  await start();
-  const saved = await (await fetch(base + receipt.api_url)).json();
-  assert.equal(saved.message.message, 'Still here');
-  assert.equal(saved.message.submission_method, 'api');
+test('the application server refuses to start without PostgreSQL', () => {
+  const env = { ...process.env, PORT: '3999', HOST: '127.0.0.1', TRUST_PROXY: '0' };
+  delete env.DATABASE_URL;
+  delete env.DATABASE_URL_UNPOOLED;
+  delete env.STORAGE_BACKEND;
+  delete env.MAINTENANCE_MODE;
+  const child = spawnSync(process.execPath, ['src/server.js'], { env, encoding: 'utf8' });
+  assert.notEqual(child.status, 0);
+  assert.match(`${child.stdout}\n${child.stderr}`, /DATABASE_URL is required/);
 });
 
 test('submission route determines method regardless of client-supplied fields', async t => {

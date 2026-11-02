@@ -1,38 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { createBlobsStore } from '../src/blobs-store.js';
+import { openStore } from '../src/db.js';
 import { createNetlifyHandler, netlifyPublicUrl } from '../src/netlify-handler.js';
 import { config } from '../netlify/functions/app.mjs';
-
-function mockBlobs() {
-  const records = new Map();
-  const calls = { pages: 0, reads: 0 };
-  return {
-    records, calls,
-    async setJSON(key, value, options) {
-      assert.equal(options.onlyIfNew, true);
-      if (records.has(key)) return { modified: false };
-      records.set(key, structuredClone(value));
-      return { modified: true };
-    },
-    async get(key, options) {
-      assert.deepEqual(options, { type: 'json', consistency: 'strong' });
-      calls.reads++;
-      return structuredClone(records.get(key) || null);
-    },
-    async *list(options) {
-      assert.deepEqual(options, { prefix: 'messages/', paginate: true });
-      // Deliberately unordered and multiple pages, including an empty page.
-      const keys = [...records.keys()].filter(key => key.startsWith(options.prefix)).reverse();
-      yield { blobs: [] }; calls.pages++;
-      for (let i = 0; i < keys.length; i += 17) {
-        calls.pages++;
-        yield { blobs: keys.slice(i, i + 17).map(key => ({ key })) };
-      }
-    }
-  };
-}
 
 function event(path, method = 'GET', body = '', type = 'application/json') {
   return { path, httpMethod: method, headers: { host: 'society.netlify.app', 'content-type': type, 'x-nf-client-connection-ip': '192.0.2.10' }, body, isBase64Encoded: false, queryStringParameters: null, requestContext: {} };
@@ -40,43 +12,9 @@ function event(path, method = 'GET', body = '', type = 'application/json') {
 const text = response => response.isBase64Encoded ? Buffer.from(response.body, 'base64').toString() : response.body;
 const json = response => JSON.parse(text(response));
 
-test('Blobs saves unique concurrent records, scans all pages and returns latest 100', async () => {
-  const blobs = mockBlobs();
-  let time = 1800000000000;
-  const store = createBlobsStore(blobs, { now: () => time++ });
-  const rows = await Promise.all(Array.from({ length: 135 }, (_, i) => store.add('Agent', `Message ${i}`, i % 2 ? 'form' : 'api')));
-  assert.equal(blobs.records.size, 135);
-  assert.equal(new Set(rows.map(row => row.id)).size, 135);
-  const recent = await store.recent();
-  assert.deepEqual(recent, rows.slice(-100).reverse());
-  assert.ok(blobs.calls.pages > 2);
-  assert.equal(blobs.calls.reads, 135);
-  assert.deepEqual(await store.get(rows[0].id), rows[0]);
-  assert.equal(await store.get('unknown'), null);
-  assert.equal(await store.get('1800000000000-00000000-0000-4000-8000-000000000000'), null);
-  assert.deepEqual(await createBlobsStore(blobs).get(rows[0].id), rows[0], 'new adapter instance reads persisted record');
-});
-
-test('Blobs handles empty stores, same-time ordering, missing blobs and storage errors', async () => {
-  const blobs = mockBlobs();
-  const store = createBlobsStore(blobs, { now: () => 1800000000000 });
-  assert.deepEqual(await store.recent(), []);
-  const rows = await Promise.all([store.add('a', 'one', 'api'), store.add('a', 'two', 'form')]);
-  assert.deepEqual((await store.recent()).map(row => row.id), rows.map(row => row.id).sort().reverse());
-  blobs.get = async () => null;
-  assert.deepEqual(await store.recent(), []);
-  await assert.rejects(store.add('a', 'bad', 'unknown'), /Submission method/);
-  blobs.setJSON = async () => ({ modified: false });
-  await assert.rejects(store.add('a', 'collision', 'api'), /collision/);
-  blobs.setJSON = async () => { throw new Error('write failed'); };
-  await assert.rejects(store.add('a', 'failure', 'api'), /write failed/);
-  blobs.list = async function* () { throw new Error('listing failed'); };
-  await assert.rejects(store.recent(), /listing failed/);
-});
-
-test('Netlify adapter preserves clean routes, HTML PRG, API, escaping and discovery', async () => {
-  const blobs = mockBlobs();
-  const store = createBlobsStore(blobs);
+test('Netlify adapter preserves clean routes, HTML PRG, API, escaping and discovery', async t => {
+  const store = openStore(':memory:');
+  t.after(() => store.close());
   const run = createNetlifyHandler(store, { URL: 'https://society.netlify.app' });
   for (const path of ['/', '/results', '/agent-instructions', '/agent-instructions.txt', '/robots.txt', '/llms.txt', '/sitemap.xml', '/api/info', '/api/messages']) {
     assert.equal((await run(event(path), {})).statusCode, 200, path);
@@ -98,7 +36,7 @@ test('Netlify adapter preserves clean routes, HTML PRG, API, escaping and discov
   const results = text(await run(event('/results'), {}));
   assert.match(results, /&lt;script&gt;/);
   assert.doesNotMatch(results, /<script>/);
-  const coldRun = createNetlifyHandler(createBlobsStore(blobs), { URL: 'https://society.netlify.app' });
+  const coldRun = createNetlifyHandler(store, { URL: 'https://society.netlify.app' });
   assert.equal(json(await coldRun(event(receipt.api_url), {})).message.submission_method, 'api');
   assert.equal((await run(event('/.netlify/functions/app/api/info'), {})).statusCode, 200);
   assert.equal((await run(event('/api/messages', 'POST', '{}'), {})).statusCode, 400);
@@ -127,4 +65,21 @@ test('Netlify URL precedence and deploy configuration preserve routing and edge 
   assert.match(toml, /from = "\/\*"/);
   assert.match(toml, /to = "\/\.netlify\/functions\/app\/:splat"/);
   assert.match(toml, /force = false/);
+  const source = readFileSync(new URL('../netlify/functions/app.mjs', import.meta.url), 'utf8');
+  assert.doesNotMatch(source, /@netlify\/blobs|blobs-store|STORAGE_BACKEND/);
+  assert.match(source, /DATABASE_URL is required/);
+});
+
+test('the deployed function fails closed when PostgreSQL is not configured', () => {
+  const result = spawnSync(process.execPath, ['--input-type=module', '-e', `
+    const handler = (await import('./netlify/functions/app.mjs')).default;
+    const response = await handler(new Request('https://example.test/api/messages'), { ip: '192.0.2.10' });
+    const body = await response.text();
+    console.log(JSON.stringify({ status: response.status, body }));
+  `], { encoding: 'utf8', env: { ...process.env, DATABASE_URL: '', DATABASE_URL_UNPOOLED: '', STORAGE_BACKEND: '' } });
+  assert.equal(result.status, 0, result.stderr);
+  const reported = JSON.parse(result.stdout);
+  assert.equal(reported.status, 503);
+  assert.match(reported.body, /Storage service is temporarily unavailable/);
+  assert.doesNotMatch(reported.body, /postgres:\/\/|DATABASE_URL/);
 });

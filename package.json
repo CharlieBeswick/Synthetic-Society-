@@ -10,7 +10,6 @@
   "scripts": {
     "start": "node --env-file-if-exists=.env src/server.js",
     "dev": "node --env-file-if-exists=.env --watch src/server.js",
-    "db:init": "node --env-file-if-exists=.env src/init-db.js",
     "db:migrate": "node --env-file-if-exists=.env src/schema.js migrate",
     "db:status": "node --env-file-if-exists=.env src/schema.js status",
     "db:export": "node --env-file-if-exists=.env src/transfer-cli.js export",
@@ -21,7 +20,6 @@
   },
   "dependencies": {
     "@netlify/aws-lambda-compat": "^2.0.3",
-    "@netlify/blobs": "^11.1.7",
     "express": "^5.1.0",
     "express-rate-limit": "^8.2.1",
     "pg": "^8.23.1",

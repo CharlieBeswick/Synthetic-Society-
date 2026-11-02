@@ -4,8 +4,8 @@ import { once } from 'node:events';
 import { createApp } from '../src/app.js';
 import { applySchema, schemaStatus, splitSql } from '../src/postgres.js';
 import { createPgliteStore } from '../src/pglite-store.js';
-import { selectBackend } from '../src/storage.js';
-import { assertReportIsSafe, assertSiteIdentity, importSnapshot, missingPublicPosts, snapshotFromBlobStores, snapshotFromIdentity, summarize, validateSnapshot, verifySnapshots } from '../src/transfer.js';
+import { databaseHost, requireDatabaseUrl } from '../src/storage.js';
+import { assertReportIsSafe, assertSiteIdentity, importSnapshot, missingPublicPosts, snapshotFromIdentity, summarize, validateSnapshot, verifySnapshots } from '../src/transfer.js';
 
 async function database() {
   const store = await createPgliteStore();
@@ -30,12 +30,11 @@ const account = (id, username) => ({
   last_login_at: null
 });
 
-test('backend selection never infers postgres from a connection string', () => {
-  assert.equal(selectBackend({ DATABASE_URL: 'postgres://user:secret@db.example/app' }), 'sqlite');
-  assert.equal(selectBackend({ DATABASE_URL: 'postgres://user:secret@db.example/app' }, { defaultBackend: 'blobs' }), 'blobs');
-  assert.throws(() => selectBackend({ STORAGE_BACKEND: 'postgres' }), /requires DATABASE_URL/);
-  assert.equal(selectBackend({ STORAGE_BACKEND: 'postgres', DATABASE_URL: 'postgres://db.example/app' }), 'postgres');
-  assert.throws(() => selectBackend({ STORAGE_BACKEND: 'mysql' }), /sqlite, blobs, or postgres/);
+test('the application requires PostgreSQL and does not fall back to another database', () => {
+  assert.throws(() => requireDatabaseUrl({}), /DATABASE_URL is required/);
+  assert.throws(() => requireDatabaseUrl({ DATABASE_URL: '  ' }), /DATABASE_URL is required/);
+  assert.equal(requireDatabaseUrl({ DATABASE_URL: 'postgres://db.example/app' }), 'postgres://db.example/app');
+  assert.equal(databaseHost('postgres://user:secret@db.example:5432/app'), 'db.example:5432/app');
 });
 
 test('schema applies once and enforces the account and post constraints', async () => {
@@ -206,21 +205,14 @@ test('snapshot validation keeps every relationship and refuses a duplicate usern
   assert.deepEqual(missingPublicPosts(snapshot, [{ id: 'post-1' }, { id: 'post-2' }]), ['post-2']);
 });
 
-test('blob export includes drafts and audit without printing secrets', async () => {
-  const records = new Map();
-  const blobs = {
-    async setJSON(key, value) { records.set(key, structuredClone(value)); },
-    async get(key) { return records.has(key) ? structuredClone(records.get(key)) : null; },
-    async getWithMetadata(key) { return records.has(key) ? { data: structuredClone(records.get(key)), etag: '"1"' } : null; },
-    async *list({ prefix }) { yield { blobs: [...records.keys()].filter(key => key.startsWith(prefix)).map(key => ({ key })) }; }
-  };
-  await blobs.setJSON('messages/post-1', { id: 'post-1', agent_name: 'Guest', message: 'Hello', timestamp: '2026-01-02T03:04:05.006Z', submission_method: 'api' });
-  await blobs.setJSON('identity/account/account-1', account('account-1', 'writer'));
-  await blobs.setJSON('ouija-v2-claims/comp-1', { composition_id: 'comp-1', state_hash: 'state-1', record: { id: 'post-1' } });
-  await blobs.setJSON('post-index/account-1/1-post-1', { id: 'post-1' });
-  await blobs.setJSON('sessions/ouija-abc', { kind: 'ouija', state: 'writing', name: { 1: 'A' } });
-  await blobs.setJSON('ouija-audit/run_7f2a91c8d04e/1-resp', { at: '2026-01-02T03:04:05.006Z', response_id: 'resp_123', run_id: 'run_7f2a91c8d04e', nav_id: 'nav' });
-  const snapshot = await snapshotFromBlobStores({ messages: blobs, identity: blobs, sessions: blobs });
+test('import keeps drafts and audit events without printing secrets', async () => {
+  const snapshot = snapshotFromIdentity({
+    posts: [{ id: 'post-1', agent_name: 'Guest', message: 'Hello', timestamp: '2026-01-02T03:04:05.006Z', submission_method: 'api' }],
+    identity: [{ key: 'account/account-1', value: account('account-1', 'writer') }],
+    ouija_v2_claims: [{ composition_id: 'comp-1', state_hash: 'state-1', record: { id: 'post-1' } }],
+    draft_sessions: [{ key: 'ouija-abc', value: { kind: 'ouija', state: 'writing', name: { 1: 'A' } } }],
+    ouija_audit: [{ source_key: 'ouija-audit/run_7f2a91c8d04e/1-resp', run_id: 'run_7f2a91c8d04e', at: '2026-01-02T03:04:05.006Z', response_id: 'resp_123', nav_id: 'nav', event: { at: '2026-01-02T03:04:05.006Z', response_id: 'resp_123', run_id: 'run_7f2a91c8d04e' } }]
+  });
   assert.equal(summarize(snapshot).posts, 1);
   assert.equal(summarize(snapshot).accounts, 1);
   assert.equal(summarize(snapshot).draft_sessions, 1);
