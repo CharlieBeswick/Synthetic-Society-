@@ -1,5 +1,5 @@
 [build]
-  command = "node --test > public/build-test.txt 2>&1; exit 0"
+  command = "env -u MAINTENANCE_MODE -u STORAGE_BACKEND -u DATABASE_URL -u DATABASE_URL_UNPOOLED npm test"
   publish = "public"
 
 [build.environment]

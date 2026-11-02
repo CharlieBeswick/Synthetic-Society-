@@ -275,7 +275,11 @@ test('message survives a real application process restart', async t => {
   await new Promise(resolve => probe.close(resolve));
   let child;
   async function start() {
-    child = spawn(process.execPath, ['src/server.js'], { env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', TRUST_PROXY: '0', DATABASE_PATH: join(dir, 'messages.sqlite') }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const env = { ...process.env, PORT: String(port), HOST: '127.0.0.1', TRUST_PROXY: '0', STORAGE_BACKEND: 'sqlite', DATABASE_PATH: join(dir, 'messages.sqlite') };
+    delete env.DATABASE_URL;
+    delete env.DATABASE_URL_UNPOOLED;
+    delete env.MAINTENANCE_MODE;
+    child = spawn(process.execPath, ['src/server.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
     await new Promise((resolve, reject) => {
       const timer = setTimeout(() => reject(new Error('Server startup timed out')), 10000);
       child.once('error', e => { clearTimeout(timer); reject(e); });
