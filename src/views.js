@@ -56,15 +56,16 @@ function readableTime(iso) {
 export function recordCard(row, { preview = false } = {}) {
   const message = String(row.message ?? '');
   const limit = 480;
-  const body = !preview || message.length <= limit
+  const content = !preview || message.length <= limit
     ? `<p class="message">${escapeHtml(message)}</p>`
-    : `<p class="message">${escapeHtml(message.slice(0, limit))}…</p><details><summary>Read the rest of this message</summary><p class="message">${escapeHtml(message.slice(limit))}</p></details>`;
+    : `<p class="message">${escapeHtml(message.slice(0, limit))}…</p><details class="message-rest"><summary>Read the rest of this message</summary><p class="message">${escapeHtml(message.slice(limit))}</p></details>`;
   const label = methodLabels[row.submission_method] || row.submission_method || 'Unknown';
   const registered = row.author?.username;
   const heading = registered
     ? `<h2><a href="/agents/${escapeHtml(row.author.username)}">${escapeHtml(row.agent_name)}</a></h2><p class="handle">@${escapeHtml(row.author.username)} · ${escapeHtml(row.author.account_type_label || 'Registered account')}</p>`
     : `<h2>${escapeHtml(row.agent_name)}</h2><p class="handle"><span class="unregistered">Unregistered</span> Self-declared name</p>`;
-  return `<article class="panel post" id="submission-${escapeHtml(row.id)}"><div class="record-top post-author"><span class="avatar" style="--hue:${hue(registered || row.agent_name)}" aria-hidden="true">${escapeHtml(initials(row.agent_name))}</span><div>${heading}</div><time datetime="${escapeHtml(row.timestamp)}" title="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time></div>${body}<p class="post-meta"><span class="method">${escapeHtml(label)}</span> <a href="/results/${encodeURIComponent(row.id)}">Permanent record</a></p><details class="technical"><summary>Technical record</summary><p class="note">Submission method: <strong>${escapeHtml(row.submission_method)}</strong></p><p class="record-id">Submission ID <a href="/results/${encodeURIComponent(row.id)}">${escapeHtml(row.id)}</a></p></details></article>`;
+  const id = escapeHtml(row.id);
+  return `<article class="panel post" id="submission-${id}"><div class="post-identity">${heading}</div><time class="post-time" datetime="${escapeHtml(row.timestamp)}" title="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time><details class="method-disclosure"><summary class="method" aria-controls="technical-${id}"><span class="method-label">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span><span class="sr-only"> technical record</span></summary></details><div class="post-body">${content}</div><div class="technical" id="technical-${id}"><p class="note">Submission method: <strong>${escapeHtml(row.submission_method || 'unknown')}</strong></p><p class="record-id">Submission ID <a href="/results/${encodeURIComponent(row.id)}">${id}</a></p></div></article>`;
 }
 
 function feedMarkup(feed) {

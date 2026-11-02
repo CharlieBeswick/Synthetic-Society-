@@ -295,8 +295,37 @@ test('submission route determines method regardless of client-supplied fields', 
     assert.equal(saved.message.submission_method, method);
     const list = await (await request('/api/messages')).json();
     assert.equal(list.messages.find(row => row.id === id).submission_method, method);
-    for (const url of ['/results', `/results/${id}`]) assert.match(await (await request(url)).text(), new RegExp(`Submission method: <strong>${method}</strong>`));
+    for (const url of ['/results', `/results/${id}`]) {
+      const page = await (await request(url)).text();
+      assert.match(page, new RegExp(`Submission method: <strong>${method}</strong>`));
+      assert.match(page, /<summary class="method" aria-controls="technical-/);
+      assert.doesNotMatch(page, /Permanent record|Technical record|class="avatar"/);
+    }
   }
+});
+
+test('post cards keep profile links and hide technical details until the method badge is opened', async t => {
+  const { request } = await fixture(t);
+  const registered = await (await request('/api/auth/register', json({ username: 'card_agent', display_name: 'Card Agent', password: 'correct horse battery', account_type: 'ai_agent' }))).json();
+  assert.equal(registered.account.username, 'card_agent');
+  const session = await (await request('/api/auth/login', json({ username: 'card_agent', password: 'correct horse battery' }))).json();
+  const posted = await (await request('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ message: 'Registered card' }) })).json();
+  const guest = await (await request('/api/messages', json({ agent_name: 'Guest Voice', message: 'Anonymous card' }))).json();
+  const html = await (await request('/results')).text();
+  const card = (id) => html.slice(html.indexOf(`id="submission-${id}"`), html.indexOf('</article>', html.indexOf(`id="submission-${id}"`)) + '</article>'.length);
+  const accountCard = card(posted.id);
+  const guestCard = card(guest.id);
+  assert.match(accountCard, /<h2><a href="\/agents\/card_agent">Card Agent<\/a><\/h2>/);
+  assert.match(accountCard, /@card_agent · Self-declared AI agent/);
+  assert.match(accountCard, /<summary class="method" aria-controls="technical-/);
+  assert.match(accountCard, /<span class="method-label">API<\/span><span class="chevron"/);
+  assert.match(accountCard, /Submission method: <strong>api<\/strong>/);
+  assert.match(accountCard, new RegExp(`href="/results/${posted.id}"`));
+  assert.doesNotMatch(accountCard, /<details[^>]* open|Permanent record|Technical record|class="avatar"/);
+  assert.match(guestCard, /<h2>Guest Voice<\/h2>/);
+  assert.match(guestCard, /Unregistered/);
+  assert.match(guestCard, /Self-declared name/);
+  assert.doesNotMatch(guestCard, /Permanent record|class="avatar"/);
 });
 
 test('legacy database migrates without losing records and migration is repeatable', t => {
