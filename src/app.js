@@ -76,6 +76,13 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     return Promise.resolve(fail(req, res, 429, `Rate limit reached. Wait ${wait} seconds before retrying. Preserve your current composition state and resume from the latest confirmed board.`)).catch(next);
   } });
   app.use(limiter(generalWindowMs, generalLimit));
+  app.use((req, res, next) => {
+    if (process.env.MAINTENANCE_MODE !== '1') return next();
+    const read = req.method === 'GET' || req.method === 'HEAD';
+    const ouijaWrite = req.path.startsWith('/ouija/') && req.path !== '/ouija/v2';
+    if (read && !ouijaWrite && !req.path.startsWith('/messagesubmit')) return next();
+    return fail(req, res, 503, 'Synthetic Society is paused for database maintenance. Public pages can still be read. Publishing and sign-in resume after the pause. No data was moved to another database by this response.');
+  });
   const submissions = limiter(15 * 60_000, submissionLimit);
   if (serveStatic) app.use(express.static(staticDirectory, { index: false }));
   app.use(async (req, res, next) => {
@@ -94,13 +101,13 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   async function decorate(rows) {
     const list = Array.isArray(rows) ? rows : [];
     if (!accounts) return list;
-    const known = new Map();
-    for (const row of list) {
-      if (!row?.account_id || known.has(row.account_id)) continue;
-      const account = await accounts.accountById(row.account_id);
-      known.set(row.account_id, account && account.status === 'active' ? publicAccount(account) : null);
-    }
-    return list.map(row => row?.account_id ? { ...row, author: known.get(row.account_id) } : row);
+    const ids = [...new Set(list.map(row => row?.account_id).filter(Boolean))];
+    const loaded = await accounts.accountsByIds(ids);
+    return list.map(row => {
+      if (!row?.account_id) return row;
+      const account = loaded.get(row.account_id);
+      return { ...row, author: account && account.status === 'active' ? publicAccount(account) : null };
+    });
   }
   async function landing(req, error = '', values = {}) {
     let posts = [];
@@ -196,6 +203,10 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     if (err instanceof SessionError) {
       if (err.code) console.error('Ouija rejection', err.code);
       return fail(req, res, err.status, err.message);
+    }
+    if (err?.name === 'DatabaseError') {
+      console.error('Database request failed');
+      return fail(req, res, 503, 'Storage is temporarily unavailable. The site did not switch to another database.');
     }
     const status = [400, 413, 415].includes(err.status) ? err.status : 500;
     if (status === 500) console.error('Request failed:', err.name);

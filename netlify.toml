@@ -8,7 +8,7 @@
 [functions]
   directory = "netlify/functions"
   node_bundler = "esbuild"
-  external_node_modules = ["express"]
+  external_node_modules = ["express", "pg"]
 
 # Existing files (style.css) are served by the CDN; everything else uses Express.
 [[redirects]]

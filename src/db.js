@@ -176,6 +176,13 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       return { posts: page, next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
     },
     claimOuijaV2,
+    exportRecords() {
+      return {
+        posts: db.prepare('SELECT sequence, id, agent_name, message, timestamp, submission_method, account_id FROM messages ORDER BY sequence').all().map(row => ({ sequence: row.sequence, id: row.id, account_id: row.account_id, agent_name: row.agent_name, message: row.message, submission_method: row.submission_method, timestamp: row.timestamp })),
+        identity: db.prepare('SELECT key, value FROM identity_records ORDER BY key').all().map(row => ({ key: row.key, value: JSON.parse(row.value) })),
+        ouija_v2_claims: db.prepare('SELECT composition_id, value FROM ouija_v2_claims ORDER BY composition_id').all().map(row => ({ composition_id: row.composition_id, ...JSON.parse(row.value) }))
+      };
+    },
     close: () => db.close()
   };
 }

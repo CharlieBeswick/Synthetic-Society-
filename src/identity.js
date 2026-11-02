@@ -93,6 +93,11 @@ async function read(kv, key) {
   return row ? row : null;
 }
 
+async function transaction(kv, work) {
+  if (typeof kv.transaction !== 'function') return work();
+  return kv.transaction(work);
+}
+
 async function mutate(kv, key, recipe) {
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const row = await read(kv, key);
@@ -149,6 +154,15 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
     privateAccount,
     accountByUsername,
     accountById,
+    async accountsByIds(ids) {
+      const unique = [...new Set(ids.filter(Boolean))];
+      if (typeof kv.getMany === 'function') {
+        const rows = await kv.getMany(unique.map(id => `account/${id}`));
+        return new Map(unique.map((id, index) => [id, rows[index]?.value || null]));
+      }
+      const pairs = await Promise.all(unique.map(async id => [id, await accountById(id)]));
+      return new Map(pairs);
+    },
     async register(input, idempotencyKey) {
       const username = normalizeUsername(input.username);
       const display_name = text(input.display_name, 80, 'display_name');
@@ -181,16 +195,18 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
       const id = randomUUID();
       let claimed = false;
       try {
-        if (!await kv.create(`username/${username}`, { id })) throw new AccountError(409, 'USERNAME_TAKEN', 'This username is already registered.', 'username');
-        claimed = true;
-        const at = nowIso(now);
-        const record = { id, username, username_normalized: username, display_name, account_type: input.account_type, password_hash, ...profile, created_at: at, updated_at: at, last_login_at: null, status: 'active' };
-        if (!await kv.create(`account/${id}`, record)) throw new AccountError(503, 'ACCOUNT_UNAVAILABLE', 'The account record could not be stored.');
-        const codes = codesFor(id);
-        await storeCodes(id, codes.records);
-        const account = publicAccount(record);
-        await finishIdempotency(idem?.key, idem?.version, { state: 'complete', fingerprint, at, account });
-        return { replay: false, account, recovery_codes: codes.plain };
+        return await transaction(kv, async () => {
+          if (!await kv.create(`username/${username}`, { id })) throw new AccountError(409, 'USERNAME_TAKEN', 'This username is already registered.', 'username');
+          claimed = true;
+          const at = nowIso(now);
+          const record = { id, username, username_normalized: username, display_name, account_type: input.account_type, password_hash, ...profile, created_at: at, updated_at: at, last_login_at: null, status: 'active' };
+          if (!await kv.create(`account/${id}`, record)) throw new AccountError(503, 'ACCOUNT_UNAVAILABLE', 'The account record could not be stored.');
+          const codes = codesFor(id);
+          await storeCodes(id, codes.records);
+          const account = publicAccount(record);
+          await finishIdempotency(idem?.key, idem?.version, { state: 'complete', fingerprint, at, account });
+          return { replay: false, account, recovery_codes: codes.plain };
+        });
       } catch (error) {
         if (claimed && !(await read(kv, `account/${id}`))) await kv.remove(`username/${username}`);
         if (idem && error instanceof AccountError) await kv.swap(idem.key, { state: 'failed', fingerprint, at: nowIso(now), status: error.status, code: error.code, message: error.message, field: error.field }, idem.version);
@@ -237,8 +253,10 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
       const id = randomUUID();
       const at = nowIso(now);
       const record = { id, account_id: auth.account.id, label, scopes, created_at: at, expires_at: new Date(now() + days * 86400000).toISOString(), last_used_at: null, revoked_at: null };
-      await kv.create(`token/${sha(value)}`, record);
-      await kv.create(`token-of/${auth.account.id}/${id}`, { hash: sha(value) });
+      await transaction(kv, async () => {
+        await kv.create(`token/${sha(value)}`, record);
+        await kv.create(`token-of/${auth.account.id}/${id}`, { hash: sha(value) });
+      });
       return { token: value, ...record };
     },
     async listTokens(accountId) {
@@ -292,16 +310,20 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
       const account = await accountById(auth.account.id);
       if (!await verifyPassword(current, account.password_hash)) throw new AccountError(401, 'INVALID_CREDENTIALS', 'The current password is incorrect.');
       const password_hash = await hashPassword(next);
-      await mutate(kv, `account/${account.id}`, row => ({ ...row, password_hash, updated_at: nowIso(now) }));
-      if (revokeOthers) await revokeExcept(auth);
+      await transaction(kv, async () => {
+        await mutate(kv, `account/${account.id}`, row => ({ ...row, password_hash, updated_at: nowIso(now) }));
+        if (revokeOthers) await revokeExcept(auth);
+      });
     },
     async replaceRecoveryCodes(auth, current) {
       if (auth?.kind !== 'session') throw new AccountError(403, 'FORBIDDEN', 'Recovery codes can only be replaced from a signed-in session.');
       const account = await accountById(auth.account.id);
       if (!await verifyPassword(current, account.password_hash)) throw new AccountError(401, 'INVALID_CREDENTIALS', 'The current password is incorrect.');
-      await revokeCodes(account.id);
       const codes = codesFor(account.id);
-      await storeCodes(account.id, codes.records);
+      await transaction(kv, async () => {
+        await revokeCodes(account.id);
+        await storeCodes(account.id, codes.records);
+      });
       return codes.plain;
     },
     async recover(input) {
@@ -314,18 +336,20 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
         throw new AccountError(401, 'RECOVERY_FAILED', 'Recovery could not be completed.');
       }
       passwordError(input.new_password, account.username);
-      const used_at = nowIso(now);
-      let consumed = false;
-      for (let attempt = 0; attempt < 5 && !consumed; attempt += 1) {
-        const current = await read(kv, `recovery/${hash}`);
-        if (!current || current.value.used_at || current.value.account_id !== account.id) break;
-        consumed = await kv.swap(`recovery/${hash}`, { ...current.value, used_at }, current.version);
-      }
-      if (!consumed) throw new AccountError(401, 'RECOVERY_FAILED', 'Recovery could not be completed.');
-      await mutate(kv, `recovery-of/${account.id}/${hash}`, value => ({ ...value, used_at }));
       const password_hash = await hashPassword(input.new_password);
-      await mutate(kv, `account/${account.id}`, value => ({ ...value, password_hash, updated_at: nowIso(now) }));
-      await revokeAll(account.id);
+      const used_at = nowIso(now);
+      await transaction(kv, async () => {
+        let consumed = false;
+        for (let attempt = 0; attempt < 5 && !consumed; attempt += 1) {
+          const current = await read(kv, `recovery/${hash}`);
+          if (!current || current.value.used_at || current.value.account_id !== account.id) break;
+          consumed = await kv.swap(`recovery/${hash}`, { ...current.value, used_at }, current.version);
+        }
+        if (!consumed) throw new AccountError(401, 'RECOVERY_FAILED', 'Recovery could not be completed.');
+        await mutate(kv, `recovery-of/${account.id}/${hash}`, value => ({ ...value, used_at }));
+        await mutate(kv, `account/${account.id}`, value => ({ ...value, password_hash, updated_at: nowIso(now) }));
+        await revokeAll(account.id);
+      });
       return { username: account.username, profile_url: `/agents/${account.username}` };
     },
     async beginPost(scope, idempotencyKey, fingerprint) {
@@ -351,8 +375,10 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
     const id = randomUUID();
     const at = nowIso(now);
     const record = { id, account_id: account.id, created_at: at, expires_at: new Date(now() + SESSION_MS).toISOString(), revoked_at: null, csrf: randomBytes(24).toString('base64url') };
-    await kv.create(`session/${sha(value)}`, record);
-    await kv.create(`session-of/${account.id}/${id}`, { hash: sha(value) });
+    await transaction(kv, async () => {
+      await kv.create(`session/${sha(value)}`, record);
+      await kv.create(`session-of/${account.id}/${id}`, { hash: sha(value) });
+    });
     return { access_token: value, expires_at: record.expires_at, csrf: record.csrf, account: privateAccount(account) };
   }
   async function revokeExcept(auth) {
