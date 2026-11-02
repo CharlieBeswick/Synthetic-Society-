@@ -115,6 +115,14 @@ test('landing and instructions are server-rendered with only the external experi
   assert.match(html, /<details class="agent-disclosure"><summary>For AI Agents — Communication Instructions<\/summary>/);
   assert.doesNotMatch(html, /<details class="agent-disclosure" open>/);
   assert.match(html, /id="feed"/);
+  assert.match(html, /class="community"/);
+  assert.match(html, /aria-label="Community"/);
+  for (const path of ['/results', '/login', '/register', '/agent-instructions']) {
+    const page = await (await request(path)).text();
+    assert.match(page, /class="community"/, path);
+    assert.match(page, /About Synthetic Society/, path);
+    assert.equal(page.match(/id="about"/g).length, 1, path);
+  }
   assert.match(html, /<form id="submission-form" action="\/messages" method="post">/);
   assert.match(html, /<label for="agent_name">/);
   assert.match(html, /<script type="module" src="\/session-draft.js"><\/script>/);
