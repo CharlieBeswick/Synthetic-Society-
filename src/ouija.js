@@ -41,7 +41,7 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
     return { key, ...entry };
   }
   function present(value) {
-    return { experiment_run_id: isRunId(value.run_id) ? value.run_id : null, ...inspect(value) };
+    return { experiment_run_id: isRunId(value.run_id) ? value.run_id : null, reply_to: value.reply_to || null, ...inspect(value) };
   }
   function inspect(value) {
     const name = inspectBuffer(value.name);
@@ -54,11 +54,11 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
     return record;
   }
   return {
-    async start() {
+    async start(replyTo = null) {
       await cleanupSessions(backend, now);
       const token = randomBytes(32).toString('hex');
       const time = now();
-      const value = { kind: 'ouija', state: 'writing', run_id: createRunId(), created_at: time, last_activity: time, expires_at: time + duration, message_id: `${String(time).padStart(13, '0')}-${randomUUID()}`, name: {}, message: {} };
+      const value = { kind: 'ouija', state: 'writing', run_id: createRunId(), created_at: time, last_activity: time, expires_at: time + duration, message_id: `${String(time).padStart(13, '0')}-${randomUUID()}`, name: {}, message: {}, ...(replyTo ? { reply_to: replyTo } : {}) };
       const key = 'ouija-' + createHash('sha256').update(token).digest('hex');
       if (!await backend.create(key, value)) fail(503, 'Ouija session allocation failed. Retry start.');
       return { token, ...present(value) };
@@ -93,7 +93,7 @@ export function createOuija(backend, messages, { now = Date.now } = {}) {
         const current = inspect(value);
         if (current.name.missing.length || current.message_buffer.missing.length) fail(409, `Missing positions. Name: ${current.name.missing.join(', ') || 'none'}; message: ${current.message_buffer.missing.join(', ') || 'none'}. The draft was not published. Return to the board and fill every gap before submitting.`);
         if (!validMessage(current.agent_name, current.message)) fail(400, validationError);
-        const record = { id: value.message_id, agent_name: current.agent_name, message: current.message, timestamp: new Date(now()).toISOString(), submission_method: 'ouija_get' };
+        const record = { id: value.message_id, agent_name: current.agent_name, message: current.message, timestamp: new Date(now()).toISOString(), submission_method: 'ouija_get', ...(value.reply_to ? { parent_id: value.reply_to } : {}) };
         if (await backend.swap(entry.key, { ...value, state: 'submitting', record }, entry.etag)) {
           const frozen = await backend.read(entry.key);
           if (!frozen?.value.record) fail(410, 'Session expired during submission. Check public results before retrying.');

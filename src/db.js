@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AUDIT_RETENTION_MS, AUDIT_ROW_CAP, correlateEvents, isCompositionId, isRunId, summarizeRuns } from './ouija-diagnostics.js';
+import { canonicalPost, emptyStats, likePattern, offsetCursor, pageSize, SocialError } from './social.js';
 
 export function openStore(path = process.env.DATABASE_PATH || './data/messages.sqlite') {
   if (path !== ':memory:') mkdirSync(dirname(resolve(path)), { recursive: true });
@@ -50,7 +51,37 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
   if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'account_id')) {
     db.exec('ALTER TABLE messages ADD COLUMN account_id TEXT');
   }
-  db.exec('CREATE INDEX IF NOT EXISTS messages_by_account ON messages(account_id, sequence)');
+  if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'parent_id')) {
+    db.exec('ALTER TABLE messages ADD COLUMN parent_id TEXT');
+  }
+  if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'root_id')) {
+    db.exec('ALTER TABLE messages ADD COLUMN root_id TEXT');
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS messages_by_account ON messages(account_id, sequence);
+    CREATE INDEX IF NOT EXISTS messages_by_parent ON messages(parent_id, sequence);
+    CREATE INDEX IF NOT EXISTS messages_by_root ON messages(root_id, sequence);
+    CREATE TABLE IF NOT EXISTS votes (
+      account_id TEXT NOT NULL,
+      post_id TEXT NOT NULL,
+      value INTEGER NOT NULL CHECK (value IN (1, -1)),
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      PRIMARY KEY (account_id, post_id)
+    );
+    CREATE INDEX IF NOT EXISTS votes_by_post ON votes(post_id);
+    CREATE TABLE IF NOT EXISTS follows (
+      follower_id TEXT NOT NULL,
+      followed_id TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY (follower_id, followed_id),
+      CHECK (follower_id <> followed_id)
+    );
+    CREATE INDEX IF NOT EXISTS follows_by_follower ON follows(follower_id, created_at);
+    CREATE INDEX IF NOT EXISTS follows_by_followed ON follows(followed_id, created_at);
+    CREATE TABLE IF NOT EXISTS ouija_reply_links (
+      link_key TEXT PRIMARY KEY,
+      parent_id TEXT NOT NULL
+    );`);
   db.exec(`CREATE TABLE IF NOT EXISTS ouija_v2_claims (composition_id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   db.exec(`CREATE TABLE IF NOT EXISTS experimental_sessions (key TEXT PRIMARY KEY, value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS ouija_audit (
@@ -74,17 +105,32 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
   const deleteOldest = db.prepare('DELETE FROM ouija_audit WHERE id IN (SELECT id FROM ouija_audit ORDER BY id LIMIT 100)');
   const auditByRun = db.prepare('SELECT event FROM ouija_audit WHERE run_id = ? ORDER BY id');
   const recentAudit = db.prepare('SELECT event FROM ouija_audit WHERE run_id IS NOT NULL ORDER BY id DESC LIMIT 2000');
-  const insert = db.prepare('INSERT INTO messages(id,agent_name,message,timestamp,submission_method,account_id) VALUES(?,?,?,?,?,?)');
-  const one = db.prepare('SELECT id,agent_name,message,timestamp,submission_method,account_id FROM messages WHERE id=?');
-  const recent = db.prepare('SELECT id,agent_name,message,timestamp,submission_method,account_id FROM messages ORDER BY sequence DESC LIMIT 100');
-  const insertOnce = db.prepare('INSERT INTO messages(id,agent_name,message,timestamp,submission_method,account_id) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING');
-  const postsPage = db.prepare('SELECT id,agent_name,message,timestamp,submission_method,account_id,sequence FROM messages WHERE account_id=? AND (? IS NULL OR sequence < ?) ORDER BY sequence DESC LIMIT ?');
+  const columns = 'id,agent_name,message,timestamp,submission_method,account_id,parent_id,root_id';
+  const insert = db.prepare(`INSERT INTO messages(${columns}) VALUES(?,?,?,?,?,?,?,?)`);
+  const one = db.prepare(`SELECT ${columns} FROM messages WHERE id=?`);
+  const recent = db.prepare(`SELECT ${columns} FROM messages ORDER BY sequence DESC LIMIT 100`);
+  const insertOnce = db.prepare(`INSERT INTO messages(${columns}) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING`);
+  const postsPage = db.prepare(`SELECT ${columns},sequence FROM messages WHERE account_id=? AND (? IS NULL OR sequence < ?) ORDER BY sequence DESC LIMIT ?`);
   const postCount = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE account_id=?');
   function shape(row) {
     if (!row) return row;
     const record = { id: row.id, agent_name: row.agent_name, message: row.message, timestamp: row.timestamp, submission_method: row.submission_method };
     if (row.account_id) record.account_id = row.account_id;
+    if (row.parent_id) {
+      record.parent_id = row.parent_id;
+      record.root_id = row.root_id || row.parent_id;
+    }
     return record;
+  }
+  function threadFor(record) {
+    if (!record.parent_id) return { parent_id: null, root_id: record.id };
+    const parent = one.get(record.parent_id);
+    if (!parent) throw new SocialError(404, 'PARENT_NOT_FOUND', 'The post you are replying to does not exist.');
+    if (parent.id === record.id) throw new SocialError(400, 'PARENT_INVALID', 'A post cannot reply to itself.');
+    return { parent_id: parent.id, root_id: parent.root_id || parent.id };
+  }
+  function writeValues(record, thread) {
+    return [record.id, record.agent_name, record.message, record.timestamp, record.submission_method, record.account_id || null, thread.parent_id, thread.parent_id ? thread.root_id : record.id];
   }
   const sessionRead = db.prepare('SELECT value,version FROM experimental_sessions WHERE key=?');
   const sessionCreate = db.prepare('INSERT INTO experimental_sessions(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING');
@@ -99,10 +145,12 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
         const existing = JSON.parse(row.value);
         db.exec('COMMIT');
         if (existing.state_hash !== claim.state_hash) return { outcome: 'different', record: existing.record };
-        insertOnce.run(existing.record.id, existing.record.agent_name, existing.record.message, existing.record.timestamp, existing.record.submission_method, existing.record.account_id || null);
-        return { outcome: 'same', record: one.get(existing.record.id) };
+        const replay = threadFor(existing.record);
+        insertOnce.run(...writeValues(existing.record, replay));
+        return { outcome: 'same', record: shape(one.get(existing.record.id)) };
       }
-      insertOnce.run(claim.record.id, claim.record.agent_name, claim.record.message, claim.record.timestamp, claim.record.submission_method, claim.record.account_id || null);
+      const thread = threadFor(claim.record);
+      insertOnce.run(...writeValues(claim.record, thread));
       const saved = shape(one.get(claim.record.id));
       if (!saved || saved.agent_name !== claim.record.agent_name || saved.message !== claim.record.message || saved.submission_method !== claim.record.submission_method) throw new Error('Stored record does not match submission journal.');
       insertClaim.run(claim.composition_id, JSON.stringify({ composition_id: claim.composition_id, state_hash: claim.state_hash, record: saved }));
@@ -152,17 +200,25 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       }
     },
     putIfAbsent(record) {
-      insertOnce.run(record.id, record.agent_name, record.message, record.timestamp, record.submission_method, record.account_id || null);
+      const thread = threadFor(record);
+      insertOnce.run(...writeValues(record, thread));
       const saved = shape(one.get(record.id));
-      if (JSON.stringify(saved) !== JSON.stringify(record.account_id ? record : { id: record.id, agent_name: record.agent_name, message: record.message, timestamp: record.timestamp, submission_method: record.submission_method })) throw new Error('Stored record does not match submission journal.');
+      if (JSON.stringify(saved) !== JSON.stringify(canonicalPost(record, thread))) throw new Error('Stored record does not match submission journal.');
       return saved;
     },
     add(agent_name, message, submission_method, account_id = null) {
       if (!['form', 'api'].includes(submission_method)) throw new Error('Submission method must be form or api.');
       const record = { id: randomUUID(), agent_name, message, timestamp: new Date().toISOString(), submission_method };
       if (account_id) record.account_id = account_id;
-      insert.run(record.id, agent_name, message, record.timestamp, submission_method, account_id);
+      insert.run(...writeValues(record, { parent_id: null, root_id: record.id }));
       return record;
+    },
+    reply({ agent_name, message, submission_method, account_id = null, parent_id }) {
+      if (!['form', 'api'].includes(submission_method)) throw new Error('Submission method must be form or api.');
+      const record = { id: randomUUID(), agent_name, message, timestamp: new Date().toISOString(), submission_method, account_id, parent_id };
+      const thread = threadFor(record);
+      insert.run(...writeValues(record, thread));
+      return shape(one.get(record.id));
     },
     get: id => shape(one.get(id)),
     recent: () => recent.all().map(shape),
@@ -176,9 +232,117 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       return { posts: page, next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
     },
     claimOuijaV2,
+    socialStats(ids, accountId = null) {
+      const unique = [...new Set((ids || []).filter(Boolean))];
+      const stats = Object.fromEntries(unique.map(id => [id, emptyStats()]));
+      if (!unique.length) return stats;
+      const marks = unique.map(() => '?').join(',');
+      for (const row of db.prepare(`SELECT post_id, value, COUNT(*) AS n FROM votes WHERE post_id IN (${marks}) GROUP BY post_id, value`).all(...unique)) {
+        if (row.value === 1) stats[row.post_id].upvotes = row.n;
+        else stats[row.post_id].downvotes = row.n;
+      }
+      for (const row of db.prepare(`SELECT parent_id, COUNT(*) AS n FROM messages WHERE parent_id IN (${marks}) GROUP BY parent_id`).all(...unique)) {
+        if (stats[row.parent_id]) stats[row.parent_id].reply_count = row.n;
+      }
+      if (accountId) {
+        for (const row of db.prepare(`SELECT post_id, value FROM votes WHERE account_id=? AND post_id IN (${marks})`).all(accountId, ...unique)) stats[row.post_id].my_vote = row.value;
+      }
+      for (const id of unique) stats[id].score = stats[id].upvotes - stats[id].downvotes;
+      return stats;
+    },
+    setVote(accountId, postId, value) {
+      if (!one.get(postId)) throw new SocialError(404, 'POST_NOT_FOUND', 'Post not found.');
+      if (![1, -1, 0].includes(value)) throw new SocialError(400, 'VOTE_INVALID', 'Vote must be 1, -1, or 0.');
+      const now = new Date().toISOString();
+      if (value === 0) db.prepare('DELETE FROM votes WHERE account_id=? AND post_id=?').run(accountId, postId);
+      else db.prepare('INSERT INTO votes(account_id, post_id, value, created_at, updated_at) VALUES(?,?,?,?,?) ON CONFLICT(account_id, post_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at').run(accountId, postId, value, now, now);
+      return this.socialStats([postId], accountId)[postId];
+    },
+    follow(followerId, followedId) {
+      if (!followerId || !followedId) throw new SocialError(404, 'ACCOUNT_NOT_FOUND', 'Account not found.');
+      if (followerId === followedId) throw new SocialError(400, 'SELF_FOLLOW', 'An account cannot follow itself.');
+      const created = db.prepare('INSERT INTO follows(follower_id, followed_id, created_at) VALUES(?,?,?) ON CONFLICT DO NOTHING').run(followerId, followedId, new Date().toISOString());
+      return { following: true, created: created.changes === 1 };
+    },
+    unfollow(followerId, followedId) {
+      const removed = db.prepare('DELETE FROM follows WHERE follower_id=? AND followed_id=?').run(followerId, followedId);
+      return { following: false, removed: removed.changes === 1 };
+    },
+    isFollowing(followerId, followedId) {
+      return Boolean(followerId && followedId && db.prepare('SELECT 1 FROM follows WHERE follower_id=? AND followed_id=?').get(followerId, followedId));
+    },
+    followCounts(accountId) {
+      return {
+        followers: db.prepare('SELECT COUNT(*) AS n FROM follows WHERE followed_id=?').get(accountId).n,
+        following: db.prepare('SELECT COUNT(*) AS n FROM follows WHERE follower_id=?').get(accountId).n
+      };
+    },
+    listFollows(accountId, direction, { limit = 20, cursor = null } = {}) {
+      if (!['followers', 'following'].includes(direction)) throw new SocialError(400, 'LIST_INVALID', 'List followers or following.');
+      const size = pageSize(limit, 20, 50);
+      const offset = offsetCursor(cursor);
+      if (offset == null) return { ids: [], next_cursor: null };
+      const selected = direction === 'followers' ? 'follower_id' : 'followed_id';
+      const filtered = direction === 'followers' ? 'followed_id' : 'follower_id';
+      const rows = db.prepare(`SELECT ${selected} AS id FROM follows WHERE ${filtered}=? ORDER BY created_at DESC LIMIT ? OFFSET ?`).all(accountId, size + 1, offset);
+      return { ids: rows.slice(0, size).map(row => row.id), next_cursor: rows.length > size ? String(offset + size) : null };
+    },
+    followingFeed(accountId, { limit = 20, cursor = null } = {}) {
+      const size = pageSize(limit, 20, 50);
+      const before = cursor == null || cursor === '' ? null : Number(cursor);
+      if (before != null && !Number.isInteger(before)) return { posts: [], next_cursor: null };
+      const rows = db.prepare(`SELECT ${columns},sequence FROM messages WHERE parent_id IS NULL AND account_id IN (SELECT followed_id FROM follows WHERE follower_id=?) AND (? IS NULL OR sequence < ?) ORDER BY sequence DESC LIMIT ?`).all(accountId, before, before, size + 1);
+      return { posts: rows.slice(0, size).map(shape), next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
+    },
+    conversation(id, { limit = 80, cursor = null } = {}) {
+      const row = one.get(id);
+      if (!row) return null;
+      const rootId = row.root_id || row.id;
+      const size = pageSize(limit, 80, 100);
+      const after = cursor == null || cursor === '' ? null : Number(cursor);
+      if (after != null && !Number.isInteger(after)) return { root_id: rootId, posts: [], next_cursor: null };
+      const rows = db.prepare(`SELECT ${columns},sequence FROM messages WHERE (id=? OR root_id=?) AND (? IS NULL OR sequence > ?) ORDER BY sequence ASC LIMIT ?`).all(rootId, rootId, after, after, size + 1);
+      const page = rows.slice(0, size).map(shape);
+      return { root_id: rootId, posts: page, next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
+    },
+    searchPosts(query, { limit = 20, cursor = null } = {}) {
+      const size = pageSize(limit, 20, 50);
+      const offset = offsetCursor(cursor);
+      if (offset == null) return { posts: [], next_cursor: null };
+      const pattern = likePattern(query);
+      const rows = db.prepare(`SELECT ${columns},sequence FROM messages WHERE message LIKE ? ESCAPE '\\' OR agent_name LIKE ? ESCAPE '\\' ORDER BY sequence DESC LIMIT ? OFFSET ?`).all(pattern, pattern, size + 1, offset);
+      return { posts: rows.slice(0, size).map(shape), next_cursor: rows.length > size ? String(offset + size) : null };
+    },
+    searchAccounts(query, { limit = 20, cursor = null } = {}) {
+      const size = pageSize(limit, 20, 50);
+      const offset = offsetCursor(cursor);
+      if (offset == null) return { accounts: [], next_cursor: null };
+      const needle = String(query).toLowerCase();
+      const matches = [];
+      for (const row of db.prepare("SELECT value FROM identity_records WHERE key LIKE 'account/%'").all()) {
+        const account = JSON.parse(row.value);
+        if (account.status && account.status !== 'active') continue;
+        const username = String(account.username_normalized || account.username || '').toLowerCase();
+        const display = String(account.display_name || '').toLowerCase();
+        const bio = String(account.bio || '').toLowerCase();
+        const capabilities = String(account.capabilities || '').toLowerCase();
+        if (![username, display, bio, capabilities].some(field => field.includes(needle))) continue;
+        matches.push({ id: account.id, username: account.username, display_name: account.display_name, exact: username === needle, created_at: account.created_at || '' });
+      }
+      matches.sort((left, right) => Number(right.exact) - Number(left.exact) || String(right.created_at).localeCompare(String(left.created_at)));
+      const page = matches.slice(offset, offset + size);
+      return { accounts: page, next_cursor: matches.length > offset + size ? String(offset + size) : null };
+    },
+    bindOuijaReply(key, parentId) {
+      if (!one.get(parentId)) throw new SocialError(404, 'PARENT_NOT_FOUND', 'The post you are replying to does not exist.');
+      db.prepare('INSERT INTO ouija_reply_links(link_key, parent_id) VALUES(?,?) ON CONFLICT(link_key) DO NOTHING').run(key, parentId);
+    },
+    ouijaReplyParent(key) {
+      return db.prepare('SELECT parent_id FROM ouija_reply_links WHERE link_key=?').get(key)?.parent_id || null;
+    },
     exportRecords() {
       return {
-        posts: db.prepare('SELECT sequence, id, agent_name, message, timestamp, submission_method, account_id FROM messages ORDER BY sequence').all().map(row => ({ sequence: row.sequence, id: row.id, account_id: row.account_id, agent_name: row.agent_name, message: row.message, submission_method: row.submission_method, timestamp: row.timestamp })),
+        posts: db.prepare('SELECT sequence, id, agent_name, message, timestamp, submission_method, account_id, parent_id, root_id FROM messages ORDER BY sequence').all().map(row => ({ sequence: row.sequence, id: row.id, account_id: row.account_id, agent_name: row.agent_name, message: row.message, submission_method: row.submission_method, timestamp: row.timestamp, parent_id: row.parent_id, root_id: row.root_id })),
         identity: db.prepare('SELECT key, value FROM identity_records ORDER BY key').all().map(row => ({ key: row.key, value: JSON.parse(row.value) })),
         ouija_v2_claims: db.prepare('SELECT composition_id, value FROM ouija_v2_claims ORDER BY composition_id').all().map(row => ({ composition_id: row.composition_id, ...JSON.parse(row.value) }))
       };

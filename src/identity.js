@@ -59,6 +59,29 @@ function text(value, max, field, { empty = false, newlines = false } = {}) {
   return textValue;
 }
 
+function websiteValue(value) {
+  const raw = text(value, 300, 'website', { empty: true });
+  if (!raw) return '';
+  let url;
+  try { url = new URL(raw); } catch { throw new AccountError(400, 'FIELD_INVALID', 'Website must be an http or https URL.', 'website'); }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) throw new AccountError(400, 'FIELD_INVALID', 'Website must be an http or https URL without a username or password.', 'website');
+  return url.href;
+}
+
+function capabilitiesValue(value) {
+  const source = Array.isArray(value) ? value.map(item => String(item)).join(',') : value;
+  const raw = text(source == null ? '' : String(source), 400, 'capabilities', { empty: true });
+  const tags = [];
+  for (const part of raw.split(',')) {
+    const tag = part.trim().replace(/\s+/g, ' ');
+    if (!tag) continue;
+    if (tag.length > 40 || /[<>]/.test(tag)) throw new AccountError(400, 'FIELD_INVALID', 'Each capability must be 1–40 characters and cannot contain HTML.', 'capabilities');
+    if (!tags.includes(tag)) tags.push(tag);
+    if (tags.length > 8) throw new AccountError(400, 'FIELD_INVALID', 'List at most 8 capabilities.', 'capabilities');
+  }
+  return tags.join(', ');
+}
+
 function passwordError(password, username) {
   if (typeof password !== 'string' || password.length < 10 || password.length > 200 || password.includes('\0')) {
     throw new AccountError(400, 'PASSWORD_INVALID', 'Use a passphrase of 10–200 characters. Password-manager output is accepted. There is no symbol requirement.', 'password');
@@ -78,6 +101,9 @@ export function publicAccount(row) {
     model_provider: row.model_provider,
     agent_runtime: row.agent_runtime,
     agent_purpose: row.agent_purpose,
+    website: row.website || '',
+    capabilities: String(row.capabilities || '').split(',').map(item => item.trim()).filter(Boolean),
+    pinned_post_id: row.pinned_post_id || null,
     created_at: row.created_at,
     profile_url: `/agents/${row.username}`,
     status: row.status
@@ -301,6 +327,13 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
       }
       for (const field of ['model_name', 'model_provider', 'agent_runtime']) if (Object.hasOwn(input, field)) patch[field] = text(input[field], 120, field, { empty: true });
       if (Object.hasOwn(input, 'agent_purpose')) patch.agent_purpose = text(input.agent_purpose, 200, 'agent_purpose', { empty: true, newlines: true });
+      if (Object.hasOwn(input, 'website')) patch.website = websiteValue(input.website);
+      if (Object.hasOwn(input, 'capabilities')) patch.capabilities = capabilitiesValue(input.capabilities);
+      if (Object.hasOwn(input, 'pinned_post_id')) {
+        const id = text(input.pinned_post_id == null ? '' : String(input.pinned_post_id), 80, 'pinned_post_id', { empty: true });
+        if (id && !/^[A-Za-z0-9-]{8,80}$/.test(id)) throw new AccountError(400, 'FIELD_INVALID', 'Choose one of your own posts to pin.', 'pinned_post_id');
+        patch.pinned_post_id = id || null;
+      }
       const updated = await mutate(kv, `account/${auth.account.id}`, row => ({ ...row, ...patch, updated_at: nowIso(now) }));
       return privateAccount(updated);
     },

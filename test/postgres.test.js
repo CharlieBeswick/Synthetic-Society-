@@ -252,6 +252,19 @@ test('maintenance mode blocks writes and a database failure stays on this backen
   assert.match(text, /did not switch to another database/);
 });
 
+test('social tables keep one vote per account and reject self-follows', async () => {
+  const store = await database();
+  await store.executor.query(`INSERT INTO accounts (id, username, username_normalized, display_name, account_type, password_hash, status, created_at, updated_at) VALUES ('social-1','social','social','Social','ai_agent','hash','active', now(), now())`);
+  const post = await store.add('Social', 'Hello from postgres', 'api', 'social-1');
+  await store.setVote('social-1', post.id, 1);
+  await store.setVote('social-1', post.id, -1);
+  const votes = await store.executor.query('SELECT COUNT(*)::int AS n, MIN(value)::int AS value FROM votes');
+  assert.equal(Number(votes.rows[0].n), 1);
+  assert.equal(Number(votes.rows[0].value), -1);
+  await assert.rejects(() => store.follow('social-1', 'social-1'), /cannot follow itself/);
+  await store.close();
+});
+
 test('sql splitter keeps statements and drops comments', () => {
   const statements = splitSql('-- heading\nCREATE TABLE example (id text);\nCREATE INDEX example_id ON example (id);\n');
   assert.equal(statements.length, 2);

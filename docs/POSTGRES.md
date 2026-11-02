@@ -26,7 +26,7 @@ npm run db:migrate
 npm run db:status
 ```
 
-The web process does not apply migrations. `001_initial.sql` creates accounts, posts, sessions, tokens, recovery codes, idempotency records and Ouija tables. `002_ouija_source_keys.sql` adds the audit source key used to import existing events once.
+The web process does not apply migrations. `001_initial.sql` creates accounts, posts, sessions, tokens, recovery codes, idempotency records and Ouija tables. `002_ouija_source_keys.sql` adds the audit source key used to import existing events once. `003_social.sql` adds reply links, votes, follows, profile fields and search indexes. It keeps existing posts and accounts. Apply it with `npm run db:migrate` before deploying the social features.
 
 ## Export, import and verify
 

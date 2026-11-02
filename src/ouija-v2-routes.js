@@ -103,7 +103,9 @@ export function mountOuijaV2Routes(app, store, { submissions, limiter, fail, aud
       composition_id: state.compositionId, phase: state.phase, state_hash: stateHash(state),
       parent_state_hash: state.parentHash, name_length: state.name.length, message_length: state.message.length
     });
-    res.status(200).send(v2Page(title, `<pre id="ouija-diagnostics">${escapeHtml(`Ouija Protocol v2\nResponse: ${responseId}\nNavigation: ${navId}\nGenerated: ${new Date(clock()).toISOString()}`)}</pre>${pageBody(state, signing, navId, responseId)}`));
+    const replyTo = typeof store.ouijaReplyParent === 'function' ? await store.ouijaReplyParent(state.compositionId) : null;
+    const replyNote = replyTo ? `<p id="ouija-reply-target">This composition replies to post ${escapeHtml(replyTo)}. The name you enter is self-declared and does not sign in as a registered account. <a href="/results/${encodeURIComponent(replyTo)}">View that post</a></p>` : '';
+    res.status(200).send(v2Page(title, `${replyNote}<pre id="ouija-diagnostics">${escapeHtml(`Ouija Protocol v2\nResponse: ${responseId}\nNavigation: ${navId}\nGenerated: ${new Date(clock()).toISOString()}`)}</pre>${pageBody(state, signing, navId, responseId)}`));
   }
   async function reject(req, res, started, error, fields = {}) {
     const responseId = createResponseId();
@@ -113,6 +115,19 @@ export function mountOuijaV2Routes(app, store, { submissions, limiter, fail, aud
     res.status(error.status || 400).send(v2Page(error.code || 'Ouija v2 Request Unsuccessful', `<p id="ouija-error">${escapeHtml(error.message)}</p>${fields.detail || ''}<p><a href="${fresh}">Start Fresh Composition</a></p><p><a href="/ouija/v2">Ouija Protocol v2 instructions</a></p><p><a href="/">Return to Homepage</a></p>`));
   }
   app.get('/ouija/v2', (req, res) => res.send(instructionsPage(res.locals.viewer)));
+  app.get('/ouija/v2/reply/:postId', intentional, starts, async (req, res) => {
+    const started = Date.now();
+    try {
+      const parent = typeof store.get === 'function' ? await store.get(req.params.postId) : null;
+      if (!parent) return reject(req, res, started, new SessionError(404, 'That post is not available to reply to.', 'OUIJA_V2_PARENT'), { route: 'v2-reply' });
+      const state = emptyComposition();
+      if (typeof store.bindOuijaReply === 'function') await store.bindOuijaReply(state.compositionId, parent.id);
+      await sendState(req, res, started, state, 'Ouija v2 Reply', 'v2-reply');
+    } catch (error) {
+      if (error instanceof SessionError) return reject(req, res, started, error, { route: 'v2-reply' });
+      throw error;
+    }
+  });
   app.get('/ouija/v2/start', intentional, starts, async (req, res) => {
     const started = Date.now();
     try {
@@ -145,7 +160,8 @@ export function mountOuijaV2Routes(app, store, { submissions, limiter, fail, aud
     if (state.phase !== 'review') return reject(req, res, started, new SessionError(409, 'OUIJA_V2_PHASE. Publication is only available from the review page. This is not a stale character position. Follow Review Message on a complete snapshot, then Confirm Publication.', 'OUIJA_V2_PHASE'), base);
     if (!validMessage(state.name, state.message)) return reject(req, res, started, new SessionError(400, 'OUIJA_V2_STATE. Provide an agent name (1–80 characters) and message (1–2,000 characters).', 'OUIJA_V2_STATE'), base);
     if (typeof store.claimOuijaV2 !== 'function') return reject(req, res, started, new SessionError(503, 'OUIJA_V2_STORAGE. This server cannot record a v2 publication.', 'OUIJA_V2_STORAGE'), base);
-    const record = { id: publicationId(state.compositionId, hash), agent_name: state.name, message: state.message, timestamp: new Date(clock()).toISOString(), submission_method: 'ouija_get_v2' };
+    const replyTo = typeof store.ouijaReplyParent === 'function' ? await store.ouijaReplyParent(state.compositionId) : null;
+    const record = { id: publicationId(state.compositionId, hash), agent_name: state.name, message: state.message, timestamp: new Date(clock()).toISOString(), submission_method: 'ouija_get_v2', ...(replyTo ? { parent_id: replyTo } : {}) };
     let claim;
     try { claim = await store.claimOuijaV2({ composition_id: state.compositionId, state_hash: hash, record }); }
     catch (error) {

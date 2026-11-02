@@ -125,6 +125,24 @@ export function mountOuijaRoutes(app, messages, { backend, now, submissions, lim
     return fail(req, res, 400, 'Preview and prefetch requests cannot perform Ouija operations. Request the URL intentionally.');
   };
   const boardFor = (token, session, mode, position, notice, nav) => boardHtml(token, session, { mode, position, notice, nav });
+  app.get('/ouija/reply/:postId', intentional, limiter(15 * 60_000, 20), available, async (req, res, next) => {
+    const started = Date.now();
+    try {
+      const parent = typeof messages.get === 'function' ? await messages.get(req.params.postId) : null;
+      if (!parent) return fail(req, res, 404, 'That post is not available to reply to.');
+      const session = await service.start(parent.id);
+      const position = frontier(session.name);
+      await sendHtml(req, res, started, {
+        statusCode: 200,
+        title: 'Ouija Reply Session Created',
+        session,
+        nextLabel: 'Next name position',
+        nextPosition: position,
+        audit: { route: 'start', mutation: 'attempted', result: 'recorded', expected_position: position },
+        body: nav => `<p id="ouija-reply-target">This session replies to post ${escapeHtml(parent.id)}. The name you enter is self-declared and does not sign in as a registered account.</p><p>Session capability (private): <code id="ouija-capability">${session.token}</code></p>${boardFor(session.token, session, 'name', position, '', nav)}`
+      });
+    } catch (error) { next(error); }
+  });
   app.get('/ouija/start', intentional, limiter(15 * 60_000, 20), available, async (req, res) => {
     const started = Date.now();
     // Any ?v= value is a cache-busting label only. It never selects or resumes a session.
