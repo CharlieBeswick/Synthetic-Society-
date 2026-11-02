@@ -2,7 +2,7 @@ import { getStore } from '@netlify/blobs';
 import { withLambda } from '@netlify/aws-lambda-compat';
 import { createBlobsStore } from '../../src/blobs-store.js';
 import { createNetlifyHandler } from '../../src/netlify-handler.js';
-import { blobsAudit, blobsSessions } from '../../src/session-backends.js';
+import { blobsAudit, blobsIdentity, blobsSessions } from '../../src/session-backends.js';
 
 let run;
 const invoke = withLambda(async (event, context) => {
@@ -12,13 +12,16 @@ const invoke = withLambda(async (event, context) => {
       const currentStore = () => createBlobsStore(getStore({ name: process.env.BLOBS_STORE_NAME || 'synthetic-society-messages', consistency: 'strong' }));
       // Resolve the SDK client using this invocation's context, not a cached token.
       const sessionBlobs = () => getStore({ name: `${process.env.BLOBS_STORE_NAME || 'synthetic-society-messages'}-sessions`, consistency: 'strong' });
+      const messageBlobs = () => getStore({ name: process.env.BLOBS_STORE_NAME || 'synthetic-society-messages', consistency: 'strong' });
       run = createNetlifyHandler({
         add: (...args) => currentStore().add(...args),
         putIfAbsent: record => currentStore().putIfAbsent(record),
         get: (...args) => currentStore().get(...args),
         recent: () => currentStore().recent(),
-        claimOuijaV2: claim => currentStore().claimOuijaV2(claim)
-      }, process.env, blobsSessions(sessionBlobs), blobsAudit(sessionBlobs));
+        claimOuijaV2: claim => currentStore().claimOuijaV2(claim),
+        postsByAccount: (...args) => currentStore().postsByAccount(...args),
+        countPosts: (...args) => currentStore().countPosts(...args)
+      }, process.env, blobsSessions(sessionBlobs), blobsAudit(sessionBlobs), blobsIdentity(messageBlobs));
     }
     return await run(event, context);
   } catch (error) {

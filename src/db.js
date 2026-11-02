@@ -47,6 +47,10 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       ALTER TABLE messages_v2 RENAME TO messages;
       COMMIT;`);
   }
+  if (!db.prepare('PRAGMA table_info(messages)').all().some(column => column.name === 'account_id')) {
+    db.exec('ALTER TABLE messages ADD COLUMN account_id TEXT');
+  }
+  db.exec('CREATE INDEX IF NOT EXISTS messages_by_account ON messages(account_id, sequence)');
   db.exec(`CREATE TABLE IF NOT EXISTS ouija_v2_claims (composition_id TEXT PRIMARY KEY, value TEXT NOT NULL);`);
   db.exec(`CREATE TABLE IF NOT EXISTS experimental_sessions (key TEXT PRIMARY KEY, value TEXT NOT NULL, version INTEGER NOT NULL DEFAULT 1);
     CREATE TABLE IF NOT EXISTS ouija_audit (
@@ -58,17 +62,30 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       event TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS ouija_audit_run ON ouija_audit(run_id, id);
-    CREATE INDEX IF NOT EXISTS ouija_audit_at ON ouija_audit(at);`);
+    CREATE INDEX IF NOT EXISTS ouija_audit_at ON ouija_audit(at);
+    CREATE TABLE IF NOT EXISTS identity_records (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      version INTEGER NOT NULL DEFAULT 1
+    );`);
   const insertAudit = db.prepare('INSERT INTO ouija_audit(run_id, at, response_id, nav_id, event) VALUES(?,?,?,?,?)');
   const deleteExpired = db.prepare('DELETE FROM ouija_audit WHERE id IN (SELECT id FROM ouija_audit WHERE at < ? ORDER BY id LIMIT 100)');
   const countAudit = db.prepare('SELECT COUNT(*) AS n FROM ouija_audit');
   const deleteOldest = db.prepare('DELETE FROM ouija_audit WHERE id IN (SELECT id FROM ouija_audit ORDER BY id LIMIT 100)');
   const auditByRun = db.prepare('SELECT event FROM ouija_audit WHERE run_id = ? ORDER BY id');
   const recentAudit = db.prepare('SELECT event FROM ouija_audit WHERE run_id IS NOT NULL ORDER BY id DESC LIMIT 2000');
-  const insert = db.prepare('INSERT INTO messages(id,agent_name,message,timestamp,submission_method) VALUES(?,?,?,?,?)');
-  const one = db.prepare('SELECT id,agent_name,message,timestamp,submission_method FROM messages WHERE id=?');
-  const recent = db.prepare('SELECT id,agent_name,message,timestamp,submission_method FROM messages ORDER BY sequence DESC LIMIT 100');
-  const insertOnce = db.prepare('INSERT INTO messages(id,agent_name,message,timestamp,submission_method) VALUES(?,?,?,?,?) ON CONFLICT(id) DO NOTHING');
+  const insert = db.prepare('INSERT INTO messages(id,agent_name,message,timestamp,submission_method,account_id) VALUES(?,?,?,?,?,?)');
+  const one = db.prepare('SELECT id,agent_name,message,timestamp,submission_method,account_id FROM messages WHERE id=?');
+  const recent = db.prepare('SELECT id,agent_name,message,timestamp,submission_method,account_id FROM messages ORDER BY sequence DESC LIMIT 100');
+  const insertOnce = db.prepare('INSERT INTO messages(id,agent_name,message,timestamp,submission_method,account_id) VALUES(?,?,?,?,?,?) ON CONFLICT(id) DO NOTHING');
+  const postsPage = db.prepare('SELECT id,agent_name,message,timestamp,submission_method,account_id,sequence FROM messages WHERE account_id=? AND (? IS NULL OR sequence < ?) ORDER BY sequence DESC LIMIT ?');
+  const postCount = db.prepare('SELECT COUNT(*) AS n FROM messages WHERE account_id=?');
+  function shape(row) {
+    if (!row) return row;
+    const record = { id: row.id, agent_name: row.agent_name, message: row.message, timestamp: row.timestamp, submission_method: row.submission_method };
+    if (row.account_id) record.account_id = row.account_id;
+    return record;
+  }
   const sessionRead = db.prepare('SELECT value,version FROM experimental_sessions WHERE key=?');
   const sessionCreate = db.prepare('INSERT INTO experimental_sessions(key,value) VALUES(?,?) ON CONFLICT(key) DO NOTHING');
   const sessionSwap = db.prepare('UPDATE experimental_sessions SET value=?,version=version+1 WHERE key=? AND version=?');
@@ -82,11 +99,11 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
         const existing = JSON.parse(row.value);
         db.exec('COMMIT');
         if (existing.state_hash !== claim.state_hash) return { outcome: 'different', record: existing.record };
-        insertOnce.run(existing.record.id, existing.record.agent_name, existing.record.message, existing.record.timestamp, existing.record.submission_method);
+        insertOnce.run(existing.record.id, existing.record.agent_name, existing.record.message, existing.record.timestamp, existing.record.submission_method, existing.record.account_id || null);
         return { outcome: 'same', record: one.get(existing.record.id) };
       }
-      insertOnce.run(claim.record.id, claim.record.agent_name, claim.record.message, claim.record.timestamp, claim.record.submission_method);
-      const saved = one.get(claim.record.id);
+      insertOnce.run(claim.record.id, claim.record.agent_name, claim.record.message, claim.record.timestamp, claim.record.submission_method, claim.record.account_id || null);
+      const saved = shape(one.get(claim.record.id));
       if (!saved || saved.agent_name !== claim.record.agent_name || saved.message !== claim.record.message || saved.submission_method !== claim.record.submission_method) throw new Error('Stored record does not match submission journal.');
       insertClaim.run(claim.composition_id, JSON.stringify({ composition_id: claim.composition_id, state_hash: claim.state_hash, record: saved }));
       db.exec('COMMIT');
@@ -103,6 +120,19 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       swap: (key, value, etag) => sessionSwap.run(JSON.stringify(value), key, etag).changes === 1,
       remove: key => db.prepare('DELETE FROM experimental_sessions WHERE key=?').run(key),
       async *keys() { for (const row of db.prepare('SELECT key FROM experimental_sessions LIMIT 100').all()) yield row.key; }
+    },
+    identity: {
+      get(key) {
+        const row = db.prepare('SELECT value, version FROM identity_records WHERE key=?').get(key);
+        return row ? { value: JSON.parse(row.value), version: row.version } : null;
+      },
+      create: (key, value) => db.prepare('INSERT INTO identity_records(key, value) VALUES(?, ?) ON CONFLICT(key) DO NOTHING').run(key, JSON.stringify(value)).changes === 1,
+      swap: (key, value, version) => db.prepare('UPDATE identity_records SET value=?, version=version+1 WHERE key=? AND version=?').run(JSON.stringify(value), key, version).changes === 1,
+      async remove(key) { db.prepare('DELETE FROM identity_records WHERE key=?').run(key); },
+      async keys(prefix = '') {
+        const like = `${prefix.replace(/[\\%_]/g, char => `\\${char}`)}%`;
+        return db.prepare("SELECT key FROM identity_records WHERE key LIKE ? ESCAPE '\\' ORDER BY key LIMIT 500").all(like).map(row => row.key);
+      }
     },
     audit: {
       async append(event) {
@@ -122,19 +152,29 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       }
     },
     putIfAbsent(record) {
-      insertOnce.run(record.id, record.agent_name, record.message, record.timestamp, record.submission_method);
-      const saved = one.get(record.id);
-      if (JSON.stringify({ ...saved }) !== JSON.stringify(record)) throw new Error('Stored record does not match submission journal.');
+      insertOnce.run(record.id, record.agent_name, record.message, record.timestamp, record.submission_method, record.account_id || null);
+      const saved = shape(one.get(record.id));
+      if (JSON.stringify(saved) !== JSON.stringify(record.account_id ? record : { id: record.id, agent_name: record.agent_name, message: record.message, timestamp: record.timestamp, submission_method: record.submission_method })) throw new Error('Stored record does not match submission journal.');
       return saved;
     },
-    add(agent_name, message, submission_method) {
+    add(agent_name, message, submission_method, account_id = null) {
       if (!['form', 'api'].includes(submission_method)) throw new Error('Submission method must be form or api.');
       const record = { id: randomUUID(), agent_name, message, timestamp: new Date().toISOString(), submission_method };
-      insert.run(record.id, agent_name, message, record.timestamp, submission_method);
+      if (account_id) record.account_id = account_id;
+      insert.run(record.id, agent_name, message, record.timestamp, submission_method, account_id);
       return record;
     },
-    get: id => one.get(id),
-    recent: () => recent.all(),
+    get: id => shape(one.get(id)),
+    recent: () => recent.all().map(shape),
+    countPosts: accountId => postCount.get(accountId).n,
+    postsByAccount(accountId, { limit = 20, cursor = null } = {}) {
+      const size = Math.min(Math.max(Number(limit) || 20, 1), 50);
+      const before = cursor == null || cursor === '' ? null : Number(cursor);
+      if (before != null && !Number.isInteger(before)) return { posts: [], next_cursor: null };
+      const rows = postsPage.all(accountId, before, before, size + 1);
+      const page = rows.slice(0, size).map(shape);
+      return { posts: page, next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
+    },
     claimOuijaV2,
     close: () => db.close()
   };

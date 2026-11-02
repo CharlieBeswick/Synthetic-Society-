@@ -1,6 +1,28 @@
 import { AUDIT_RETENTION_MS, correlateEvents, isCompositionId, isRunId, summarizeRuns } from './ouija-diagnostics.js';
 
 // SDK client supplied lazily so Netlify request context is never cached.
+export function blobsIdentity(getBlobs) {
+  return {
+    async get(key) {
+      const row = await getBlobs().getWithMetadata(`identity/${key}`, { type: 'json', consistency: 'strong' });
+      return row?.data ? { value: row.data, version: row.etag } : null;
+    },
+    async create(key, value) { return (await getBlobs().setJSON(`identity/${key}`, value, { onlyIfNew: true })).modified; },
+    async swap(key, value, etag) { return (await getBlobs().setJSON(`identity/${key}`, value, { onlyIfMatch: etag })).modified; },
+    async remove(key) { await getBlobs().delete(`identity/${key}`); },
+    async keys(prefix = '') {
+      const out = [];
+      for await (const page of getBlobs().list({ prefix: `identity/${prefix}`, paginate: true })) {
+        for (const blob of page.blobs) {
+          out.push(blob.key.slice('identity/'.length));
+          if (out.length >= 500) return out;
+        }
+      }
+      return out;
+    }
+  };
+}
+
 export function blobsSessions(getBlobs) {
   return {
     async read(key) {

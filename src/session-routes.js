@@ -36,7 +36,7 @@ export function mountSessionRoutes(app, messages, { backend, now, chooseSlot, su
       if (/prefetch|prerender|preview/i.test(`${req.get('purpose') || ''} ${req.get('sec-purpose') || ''} ${req.get('x-purpose') || ''}`)) return fail(req, res, 400, 'Prefetch and preview requests cannot trigger submission. Request the URL intentionally.');
       const record = await sessions.submit(req.query.token, { slot, revision: Number(req.query.revision) });
       if (req.accepts(['html', 'json']) === 'json') return res.json({ success: true, ...record, verification_url: `/results/${record.id}`, api_url: `/api/messages/${record.id}` });
-      res.send(layout('Submission Successful', `<h1>Submission succeeded.</h1><p>Your prepared message has been saved. Repeated requests return this same record.</p>${recordCard(record)}<p><a href="/results/${record.id}">Individual result</a> · <a href="/api/messages/${record.id}">JSON verification</a></p>`));
+      res.send(layout('Submission Successful', `<h1>Submission succeeded.</h1><p>Your prepared message has been saved. Repeated requests return this same record.</p>${recordCard(record)}<p><a href="/results/${record.id}">Individual result</a> · <a href="/api/messages/${record.id}">JSON verification</a></p>`, '', '', [], res.locals.viewer));
     }));
   }
   return sessions;
