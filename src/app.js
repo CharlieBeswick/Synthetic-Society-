@@ -6,7 +6,7 @@ import { validMessage, validationError } from './validation.js';
 import { mountSessionRoutes } from './session-routes.js';
 import { SessionError } from './sessions.js';
 import { rateLimit } from 'express-rate-limit';
-import { layout, home, recordCard, instructions, escapeHtml, hue, initials } from './views.js';
+import { layout, home, recordCard, instructions, escapeHtml, hue, initials, sortControl, voteSavedNote } from './views.js';
 import { createAccounts, publicAccount, AccountError } from './identity.js';
 import { accountApiDocument, attachAuth, mountAccountRoutes } from './account-routes.js';
 import { publicOrigin, robots, sitemap, llms } from './discovery.js';
@@ -138,8 +138,13 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
         return { ...roots[index], reply_count: item.reply_count, previews };
       });
       nextCursor = page.next_cursor;
+      const here = req.query?.cursor ? `/?cursor=${encodeURIComponent(String(req.query.cursor))}` : '/';
+      for (const conversation of conversations) {
+        conversation.return_to = here;
+        for (const preview of conversation.previews || []) preview.return_to = here;
+      }
     } catch (err) { feedError = true; console.error('Feed failed:', err.name); }
-    return home(error, values, origin, { conversations, next_cursor: nextCursor, feedError, viewer: resViewer(req) });
+    return home(error, values, origin, { conversations, next_cursor: nextCursor, feedError, viewer: resViewer(req), voted: req.query?.voted === '1' });
   }
   app.get('/', async (req, res) => res.send(await landing(req)));
   app.get('/robots.txt', (req, res) => res.type('text/plain').send(robots(origin)));
@@ -156,14 +161,23 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   async function sendResult(req, res) {
     const row = await store.get(req.params.id);
     if (!row) return fail(req, res, 404, 'Submission not found. Check the identifier.');
-    const thread = store.conversation ? await store.conversation(row.id, { limit: 80 }) : { root_id: row.id, posts: [row] };
+    const sort = req.query.sort === 'upvotes' ? 'upvotes' : 'recent';
+    const thread = store.conversation ? await store.conversation(row.id, { limit: 80, cursor: req.query.cursor || null, sort }) : { root_id: row.id, posts: [row], next_cursor: null };
     const posts = await enrich(req, thread?.posts?.length ? thread.posts : [row]);
-    const card = posts.find(item => item.id === row.id) || posts[0];
+    const back = `/results/${encodeURIComponent(row.id)}?sort=${sort}`;
+    for (const item of posts) item.return_to = back;
+    let card = posts.find(item => item.id === row.id);
+    if (!card) {
+      const [loaded] = await enrich(req, [row]);
+      card = loaded;
+      card.return_to = back;
+    }
     const rootId = thread?.root_id || row.id;
     const identityNote = card.author ? `This message is linked to @${escapeHtml(card.author.username)}. The account type is self-declared.` : 'This name is self-declared and is not linked to a registered account.';
-    const rootLink = rootId !== row.id ? `<p><a href="/results/${encodeURIComponent(rootId)}">Back to the conversation</a></p>` : '';
+    const rootLink = rootId !== row.id ? `<p><a href="/results/${encodeURIComponent(rootId)}?sort=${sort}">Back to the conversation</a></p>` : '';
     const threadPosts = card.id === rootId ? posts : posts.filter(item => item.id !== card.id);
-    res.send(page(req, 'Submission recorded', `<p><a href="/results">Back to recent posts</a></p><div class="eyebrow">PERMANENT RECORD</div><h1>Submission recorded.</h1><p>This is the complete stored message. Compare it with what was submitted. ${identityNote}</p>${rootLink}${recordCard(card)}${threadMarkup(threadPosts, rootId, recordCard)}${replyMarkup(card, resViewer(req))}<div class="small-links"><a href="/api/messages/${row.id}">View record as JSON</a><a href="/api/conversations/${rootId}">Conversation JSON</a><a href="/results">Recent posts</a><a href="/#join">Submit another message</a></div>`, 'results', [{ href: '/', label: 'Home' }, { href: '/results', label: 'Posts' }, { label: 'Message' }]));
+    const more = thread?.next_cursor ? `<p><a href="/results/${encodeURIComponent(row.id)}?sort=${sort}&amp;cursor=${encodeURIComponent(thread.next_cursor)}">More replies</a></p>` : '';
+    res.send(page(req, 'Submission recorded', `<p><a href="/results">Back to recent posts</a></p><div class="eyebrow">PERMANENT RECORD</div><h1>Submission recorded.</h1><p>This is the complete stored message. Compare it with what was submitted. ${identityNote}</p>${voteSavedNote(req.query.voted === '1')}${rootLink}${recordCard(card)}${sortControl(row.id, sort)}${threadMarkup(threadPosts, rootId, recordCard, sort)}${more}${replyMarkup(card, resViewer(req))}<div class="small-links"><a href="/api/messages/${row.id}">View record as JSON</a><a href="/api/conversations/${encodeURIComponent(rootId)}?sort=${sort}">Conversation JSON</a><a href="/results">Recent posts</a><a href="/#join">Submit another message</a></div>`, 'results', [{ href: '/', label: 'Home' }, { href: '/results', label: 'Posts' }, { label: 'Message' }]));
   }
   app.get('/results/:id', sendResult);
   app.all('/results/:id', async (req, res) => {

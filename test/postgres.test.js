@@ -273,6 +273,17 @@ test('social tables keep one vote per account and reject self-follows', async ()
   assert.equal(Number(votes.rows[0].n), 1);
   assert.equal(Number(votes.rows[0].value), -1);
   await assert.rejects(() => store.follow('social-1', 'social-1'), /cannot follow itself/);
+  await store.setVote('social-1', reply.id, 1);
+  const both = await store.socialStats([post.id, reply.id], 'social-1');
+  assert.equal(both[post.id].score, -1);
+  assert.equal(both[reply.id].score, 1);
+  assert.equal(both[reply.id].my_vote, 1);
+  const ranked = await store.conversation(post.id, { sort: 'upvotes' });
+  assert.equal(ranked.sort, 'upvotes');
+  assert.deepEqual(ranked.posts.map(item => item.id), [post.id, reply.id]);
+  const chrono = await store.conversation(post.id, { limit: 1 });
+  assert.equal(chrono.sort, 'chronological');
+  assert.equal(chrono.posts[0].id, post.id);
   await store.close();
 });
 

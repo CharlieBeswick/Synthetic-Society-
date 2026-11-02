@@ -4,7 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AUDIT_RETENTION_MS, AUDIT_ROW_CAP, correlateEvents, isCompositionId, isRunId, summarizeRuns } from './ouija-diagnostics.js';
-import { activityCursor, canonicalPost, emptyStats, likePattern, offsetCursor, pageSize, SocialError } from './social.js';
+import { activityCursor, canonicalPost, conversationSort, emptyStats, likePattern, offsetCursor, pageSize, paginateSorted, SocialError } from './social.js';
 
 const migrationsDir = join(dirname(fileURLToPath(import.meta.url)), '../db/migrations');
 export const storageContext = new AsyncLocalStorage();
@@ -563,15 +563,33 @@ export function createStoreFromExecutor(executor, { now = () => Date.now() } = {
       const result = await query(`SELECT ${postColumns}, sequence FROM posts WHERE parent_id IS NULL AND account_id IN (SELECT followed_id FROM follows WHERE follower_id = $1) AND ($2::bigint IS NULL OR sequence < $2) ORDER BY sequence DESC LIMIT $3`, [accountId, before, size + 1]);
       return { posts: result.rows.slice(0, size).map(shape), next_cursor: result.rows.length > size ? String(result.rows[size - 1].sequence) : null };
     },
-    async conversation(id, { limit = 80, cursor = null } = {}) {
+    async conversation(id, { limit = 80, cursor = null, sort = null } = {}) {
       const root = await query('SELECT id, root_id FROM posts WHERE id = $1', [id]);
       if (!root.rows[0]) return null;
       const rootId = root.rows[0].root_id || root.rows[0].id;
+      const mode = conversationSort(sort);
+      if (mode) {
+        const result = await query(`SELECT m.id, m.author_name, m.message_text, m.created_at, m.submission_method, m.account_id, m.parent_id, m.root_id,
+            COUNT(*) FILTER (WHERE v.value = 1)::int AS upvotes,
+            COUNT(*) FILTER (WHERE v.value = -1)::int AS downvotes
+          FROM posts m LEFT JOIN votes v ON v.post_id = m.id
+          WHERE m.id = $1 OR m.root_id = $1
+          GROUP BY m.id, m.author_name, m.message_text, m.created_at, m.submission_method, m.account_id, m.parent_id, m.root_id`, [rootId]);
+        const posts = result.rows.map(entry => {
+          const post = shape(entry);
+          post.upvotes = Number(entry.upvotes) || 0;
+          post.downvotes = Number(entry.downvotes) || 0;
+          post.score = post.upvotes - post.downvotes;
+          return post;
+        });
+        const page = paginateSorted(posts, rootId, mode, limit, cursor);
+        return { root_id: rootId, posts: page.posts, next_cursor: page.next_cursor, sort: mode };
+      }
       const size = pageSize(limit, 80, 100);
       const after = cursor == null || cursor === '' ? null : Number(cursor);
-      if (after != null && !Number.isInteger(after)) return { root_id: rootId, posts: [], next_cursor: null };
+      if (after != null && !Number.isInteger(after)) return { root_id: rootId, posts: [], next_cursor: null, sort: 'chronological' };
       const result = await query(`SELECT ${postColumns}, sequence FROM posts WHERE (id = $1 OR root_id = $1) AND ($2::bigint IS NULL OR sequence > $2) ORDER BY sequence ASC LIMIT $3`, [rootId, after, size + 1]);
-      return { root_id: rootId, posts: result.rows.slice(0, size).map(shape), next_cursor: result.rows.length > size ? String(result.rows[size - 1].sequence) : null };
+      return { root_id: rootId, posts: result.rows.slice(0, size).map(shape), next_cursor: result.rows.length > size ? String(result.rows[size - 1].sequence) : null, sort: 'chronological' };
     },
     async conversationFeed({ limit = 8, cursor = null } = {}) {
       const size = pageSize(limit, 8, 20);

@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { openStore } from '../src/db.js';
 import { createApp } from '../src/app.js';
 import { createOuija } from '../src/ouija.js';
+import { threadOrder } from '../src/social.js';
 
 async function fixture(t) {
   const store = openStore(':memory:');
@@ -305,4 +306,91 @@ test('homepage groups each conversation and keeps individual message APIs', asyn
   assert.equal(busyFeed.previews[1].parent_is_root, false);
   assert.equal(busyFeed.previews[1].parent_name, 'Bea Agent');
   assert.deepEqual(store.conversationFeed({ cursor: 'not-a-cursor' }).conversations, []);
+});
+
+test('reply votes are independent and sibling sorting keeps nested replies with their parent', async t => {
+  const ordered = threadOrder([
+    { id: 'root', timestamp: '2026-01-01T00:00:00.000Z', upvotes: 0, score: 0 },
+    { id: 'z-tie', parent_id: 'root', timestamp: '2026-01-02T00:00:00.000Z', upvotes: 1, score: 1 },
+    { id: 'm-tie', parent_id: 'root', timestamp: '2026-01-02T00:00:00.000Z', upvotes: 1, score: 1 },
+    { id: 'low-score', parent_id: 'root', timestamp: '2026-01-02T00:00:00.000Z', upvotes: 1, score: 0 },
+    { id: 'hot-child', parent_id: 'low-score', timestamp: '2026-01-03T00:00:00.000Z', upvotes: 9, score: 9 }
+  ], 'root', 'upvotes');
+  assert.deepEqual(ordered.map(post => post.id), ['root', 'm-tie', 'z-tie', 'low-score', 'hot-child']);
+
+  const { request } = await fixture(t);
+  const ada = await account(request, 'vote_ada', 'Vote Ada');
+  const bea = await account(request, 'vote_bea', 'Vote Bea');
+  const root = await post(request, ada.token, 'Root for vote sorting');
+  const quiet = await post(request, bea.token, 'Quiet sibling', root.id);
+  const popular = await post(request, ada.token, 'Popular sibling', root.id);
+  const nested = await post(request, bea.token, 'Nested under popular', popular.id);
+  const middle = await post(request, ada.token, 'Middle sibling', root.id);
+  assert.equal((await request(`/api/posts/${quiet.id}/vote`, json({ value: 1 }))).status, 401);
+  const up = await (await request(`/api/posts/${popular.id}/vote`, json({ value: 1 }, ada.token))).json();
+  assert.equal(up.upvotes, 1);
+  assert.equal(up.score, 1);
+  assert.equal(up.my_vote, 1);
+  assert.equal((await (await request(`/api/messages/${root.id}`)).json()).message.score, 0);
+  const changed = await (await request(`/api/posts/${popular.id}/vote`, json({ value: -1 }, ada.token))).json();
+  assert.equal(changed.my_vote, -1);
+  assert.equal(changed.downvotes, 1);
+  assert.equal(changed.score, -1);
+  const cleared = await (await request(`/api/posts/${popular.id}/vote`, json({ value: 0 }, ada.token))).json();
+  assert.equal(cleared.my_vote, null);
+  assert.equal(cleared.score, 0);
+  await request(`/api/posts/${popular.id}/vote`, json({ value: 1 }, ada.token));
+  await request(`/api/posts/${popular.id}/vote`, json({ value: 1 }, bea.token));
+  await request(`/api/posts/${nested.id}/vote`, json({ value: 1 }, ada.token));
+  await request(`/api/posts/${nested.id}/vote`, json({ value: 1 }, bea.token));
+  await request(`/api/posts/${quiet.id}/vote`, json({ value: 1 }, ada.token));
+  await request(`/api/posts/${middle.id}/vote`, json({ value: 1 }, bea.token));
+  const stored = await (await request(`/api/messages/${popular.id}`, { headers: { Authorization: `Bearer ${ada.token}` } })).json();
+  assert.equal(stored.message.my_vote, 1);
+  assert.equal(stored.message.score, 2);
+  assert.equal((await (await request(`/api/messages/${root.id}`)).json()).message.score, 0);
+
+  const chrono = await (await request(`/api/conversations/${root.id}`)).json();
+  assert.equal(chrono.sort, 'chronological');
+  assert.deepEqual(chrono.posts.map(item => item.message), ['Root for vote sorting', 'Quiet sibling', 'Popular sibling', 'Nested under popular', 'Middle sibling']);
+  const recent = await (await request(`/api/conversations/${root.id}?sort=recent`)).json();
+  assert.equal(recent.sort, 'recent');
+  assert.deepEqual(recent.posts.map(item => item.message), ['Root for vote sorting', 'Middle sibling', 'Popular sibling', 'Nested under popular', 'Quiet sibling']);
+  const ranked = await (await request(`/api/conversations/${root.id}?sort=upvotes`)).json();
+  assert.deepEqual(ranked.posts.map(item => item.message), ['Root for vote sorting', 'Popular sibling', 'Nested under popular', 'Middle sibling', 'Quiet sibling']);
+  const recentPage = await (await request(`/api/conversations/${root.id}?sort=recent&limit=1`)).json();
+  assert.equal(recentPage.posts.at(-1).message, 'Middle sibling');
+  const recentNext = await (await request(`/api/conversations/${root.id}?sort=recent&limit=1&cursor=${recentPage.next_cursor}`)).json();
+  assert.equal(recentNext.posts.at(-1).message, 'Popular sibling');
+  assert.notEqual(recentNext.posts.at(-1).id, recentPage.posts.at(-1).id);
+  const rankedPage = await (await request(`/api/conversations/${root.id}?sort=upvotes&limit=1`)).json();
+  assert.equal(rankedPage.posts.at(-1).message, 'Popular sibling');
+  const nestedPage = await (await request(`/api/conversations/${nested.id}?sort=upvotes&limit=1&cursor=${rankedPage.next_cursor}`)).json();
+  assert.equal(nestedPage.posts.some(item => item.id === popular.id), true);
+  assert.equal(nestedPage.posts.at(-1).id, nested.id);
+  assert.equal(nestedPage.posts.at(-1).parent_id, popular.id);
+  const chronoPage = await (await request(`/api/conversations/${root.id}?limit=1`)).json();
+  assert.equal(chronoPage.posts[0].id, root.id);
+  assert.equal(typeof chronoPage.next_cursor, 'string');
+  assert.equal(chronoPage.next_cursor.startsWith('tree:'), false);
+
+  const page = await (await request(`/results/${root.id}?sort=upvotes`, { headers: { Authorization: `Bearer ${ada.token}` } })).text();
+  assert.match(page, /<label for="reply-sort">Sort replies<\/label>/);
+  assert.match(page, /<option value="upvotes" selected>Most upvotes<\/option>/);
+  assert.ok(page.indexOf('Popular sibling') < page.indexOf('Nested under popular'));
+  assert.ok(page.indexOf('Nested under popular') < page.indexOf('Middle sibling'));
+  assert.match(page, /aria-label="Upvote Vote Bea"/);
+  assert.match(page, /aria-pressed="true"/);
+  const home = await (await request('/', { headers: { Authorization: `Bearer ${ada.token}` } })).text();
+  const card = home.match(new RegExp(`<article class="panel post" id="submission-${root.id}">[\\s\\S]*?</article>`))[0];
+  assert.match(card, /aria-label="Upvote reply by Vote Bea"/);
+  assert.match(card, /Nested under popular/);
+  assert.match(card, /Middle sibling/);
+  assert.doesNotMatch(card, /Quiet sibling|reply-sort/);
+  const previewVote = await request(`/posts/${nested.id}/vote`, { method: 'POST', redirect: 'manual', headers: { Authorization: `Bearer ${ada.token}`, 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ value: '0', return: '/' }) });
+  assert.equal(previewVote.status, 303);
+  assert.equal(previewVote.headers.get('location'), '/?voted=1');
+  const saved = await (await request(previewVote.headers.get('location'), { headers: { Authorization: `Bearer ${ada.token}` } })).text();
+  assert.match(saved, /Vote saved/);
+  assert.equal((await (await request(`/api/messages/${nested.id}`, { headers: { Authorization: `Bearer ${ada.token}` } })).json()).message.my_vote, null);
 });

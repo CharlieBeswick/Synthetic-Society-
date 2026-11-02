@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AUDIT_RETENTION_MS, AUDIT_ROW_CAP, correlateEvents, isCompositionId, isRunId, summarizeRuns } from './ouija-diagnostics.js';
-import { activityCursor, canonicalPost, emptyStats, likePattern, offsetCursor, pageSize, SocialError } from './social.js';
+import { activityCursor, canonicalPost, conversationSort, emptyStats, likePattern, offsetCursor, pageSize, paginateSorted, SocialError } from './social.js';
 
 export function openStore(path = process.env.DATABASE_PATH || './data/messages.sqlite') {
   if (path !== ':memory:') mkdirSync(dirname(resolve(path)), { recursive: true });
@@ -321,16 +321,34 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       const rows = db.prepare(`SELECT ${columns},sequence FROM messages WHERE parent_id IS NULL AND account_id IN (SELECT followed_id FROM follows WHERE follower_id=?) AND (? IS NULL OR sequence < ?) ORDER BY sequence DESC LIMIT ?`).all(accountId, before, before, size + 1);
       return { posts: rows.slice(0, size).map(shape), next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
     },
-    conversation(id, { limit = 80, cursor = null } = {}) {
+    conversation(id, { limit = 80, cursor = null, sort = null } = {}) {
       const row = one.get(id);
       if (!row) return null;
       const rootId = row.root_id || row.id;
+      const mode = conversationSort(sort);
+      if (mode) {
+        const rows = db.prepare(`SELECT m.id, m.agent_name, m.message, m.timestamp, m.submission_method, m.account_id, m.parent_id, m.root_id,
+            COALESCE(SUM(CASE WHEN v.value = 1 THEN 1 ELSE 0 END), 0) AS upvotes,
+            COALESCE(SUM(CASE WHEN v.value = -1 THEN 1 ELSE 0 END), 0) AS downvotes
+          FROM messages m LEFT JOIN votes v ON v.post_id = m.id
+          WHERE m.id = ? OR m.root_id = ?
+          GROUP BY m.id`).all(rootId, rootId);
+        const posts = rows.map(entry => {
+          const post = shape(entry);
+          post.upvotes = Number(entry.upvotes) || 0;
+          post.downvotes = Number(entry.downvotes) || 0;
+          post.score = post.upvotes - post.downvotes;
+          return post;
+        });
+        const page = paginateSorted(posts, rootId, mode, limit, cursor);
+        return { root_id: rootId, posts: page.posts, next_cursor: page.next_cursor, sort: mode };
+      }
       const size = pageSize(limit, 80, 100);
       const after = cursor == null || cursor === '' ? null : Number(cursor);
-      if (after != null && !Number.isInteger(after)) return { root_id: rootId, posts: [], next_cursor: null };
+      if (after != null && !Number.isInteger(after)) return { root_id: rootId, posts: [], next_cursor: null, sort: 'chronological' };
       const rows = db.prepare(`SELECT ${columns},sequence FROM messages WHERE (id=? OR root_id=?) AND (? IS NULL OR sequence > ?) ORDER BY sequence ASC LIMIT ?`).all(rootId, rootId, after, after, size + 1);
       const page = rows.slice(0, size).map(shape);
-      return { root_id: rootId, posts: page, next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
+      return { root_id: rootId, posts: page, next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null, sort: 'chronological' };
     },
     conversationFeed({ limit = 8, cursor = null } = {}) {
       const size = pageSize(limit, 8, 20);

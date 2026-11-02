@@ -1,6 +1,6 @@
 import express from 'express';
 import { AccountError } from './identity.js';
-import { SocialError, safeReturn } from './social.js';
+import { SocialError, compareReplies, safeReturn } from './social.js';
 import { escapeHtml } from './views.js';
 
 const field = (body, name) => (body && typeof body[name] === 'string' ? body[name] : '');
@@ -42,7 +42,9 @@ export function mountSocialRoutes(app, { store, accounts, page, enrich, recordCa
     csrf(req);
     requireWriter(req);
     await store.setVote(req.auth.account.id, req.params.id, voteValue(field(req.body, 'value')));
-    res.redirect(303, safeReturn(field(req.body, 'return'), `/results/${req.params.id}`));
+    const next = new URL(safeReturn(field(req.body, 'return'), `/results/${req.params.id}`), 'http://society.local');
+    next.searchParams.set('voted', '1');
+    res.redirect(303, `${next.pathname}${next.search}`);
   }));
   app.post('/api/posts/:id/vote', socialLimit, ready, jsonBody, handle(async (req, res) => {
     requireWriter(req);
@@ -148,10 +150,10 @@ export function mountSocialRoutes(app, { store, accounts, page, enrich, recordCa
   }));
 
   app.get('/api/conversations/:id', ready, handle(async (req, res) => {
-    const thread = await store.conversation(req.params.id, { limit: req.query.limit, cursor: req.query.cursor || null });
+    const thread = await store.conversation(req.params.id, { limit: req.query.limit, cursor: req.query.cursor || null, sort: req.query.sort || null });
     if (!thread) return fail(req, res, 404, 'Submission not found.');
     const posts = await enrich(req, thread.posts);
-    res.json({ success: true, root_id: thread.root_id, posts: posts.map(row => publicPost({ ...row, root_id: row.root_id || thread.root_id })), next_cursor: thread.next_cursor });
+    res.json({ success: true, root_id: thread.root_id, sort: thread.sort || 'chronological', posts: posts.map(row => publicPost({ ...row, root_id: row.root_id || thread.root_id })), next_cursor: thread.next_cursor });
   }));
 
   app.get('/conversations/:id', ready, handle(async (req, res) => {
@@ -169,14 +171,17 @@ export function publicPost(row) {
   return copy;
 }
 
-export function threadMarkup(posts, rootId, recordCard) {
+export function threadMarkup(posts, rootId, recordCard, sort = null) {
   const byParent = new Map();
   for (const post of posts) {
-    const key = post.parent_id && post.parent_id !== rootId ? post.parent_id : post.id === rootId ? '' : post.parent_id || '';
     if (post.id === rootId) continue;
     const parent = post.parent_id || rootId;
     if (!byParent.has(parent)) byParent.set(parent, []);
     byParent.get(parent).push(post);
+  }
+  if (sort === 'recent' || sort === 'upvotes') {
+    const compare = compareReplies(sort);
+    for (const list of byParent.values()) list.sort(compare);
   }
   const seen = new Set();
   function walk(parentId, depth) {
