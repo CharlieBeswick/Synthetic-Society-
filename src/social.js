@@ -48,3 +48,14 @@ export function safeReturn(value, fallback) {
 export function emptyStats() {
   return { upvotes: 0, downvotes: 0, score: 0, my_vote: null, reply_count: 0 };
 }
+
+export function activityCursor(value) {
+  if (value == null || value === '') return null;
+  const text = String(value);
+  const split = text.lastIndexOf('|');
+  if (split < 1) return null;
+  const time = text.slice(0, split);
+  const sequence = Number(text.slice(split + 1));
+  if (!Number.isInteger(sequence) || Number.isNaN(Date.parse(time))) return null;
+  return { time, sequence };
+}

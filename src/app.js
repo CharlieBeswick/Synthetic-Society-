@@ -124,10 +124,22 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     }));
   }
   async function landing(req, error = '', values = {}) {
-    let posts = [];
+    let conversations = [];
+    let nextCursor = null;
     let feedError = false;
-    try { posts = await enrich(req, await store.recent()); } catch (err) { feedError = true; console.error('Feed failed:', err.name); }
-    return home(error, values, origin, { posts, feedError, viewer: resViewer(req) });
+    try {
+      const page = await store.conversationFeed({ limit: 8, cursor: req.query?.cursor || null });
+      const roots = await enrich(req, page.conversations.map(item => item.post));
+      const previewRows = await enrich(req, page.conversations.flatMap(item => item.previews));
+      let offset = 0;
+      conversations = page.conversations.map((item, index) => {
+        const previews = previewRows.slice(offset, offset + item.previews.length);
+        offset += item.previews.length;
+        return { ...roots[index], reply_count: item.reply_count, previews };
+      });
+      nextCursor = page.next_cursor;
+    } catch (err) { feedError = true; console.error('Feed failed:', err.name); }
+    return home(error, values, origin, { conversations, next_cursor: nextCursor, feedError, viewer: resViewer(req) });
   }
   app.get('/', async (req, res) => res.send(await landing(req)));
   app.get('/robots.txt', (req, res) => res.type('text/plain').send(robots(origin)));

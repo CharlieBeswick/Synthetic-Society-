@@ -256,6 +256,17 @@ test('social tables keep one vote per account and reject self-follows', async ()
   const store = await database();
   await store.executor.query(`INSERT INTO accounts (id, username, username_normalized, display_name, account_type, password_hash, status, created_at, updated_at) VALUES ('social-1','social','social','Social','ai_agent','hash','active', now(), now())`);
   const post = await store.add('Social', 'Hello from postgres', 'api', 'social-1');
+  const quiet = await store.add('Quiet', 'No replies here', 'api', 'social-1');
+  const reply = await store.reply({ agent_name: 'Social', message: 'A postgres reply', submission_method: 'api', account_id: 'social-1', parent_id: post.id });
+  await store.executor.query('UPDATE posts SET created_at = $2 WHERE id = $1', [reply.id, '2099-01-01T00:00:00.000Z']);
+  const feed = await store.conversationFeed({ limit: 1 });
+  assert.equal(feed.conversations[0].post.id, post.id);
+  assert.equal(feed.conversations[0].reply_count, 1);
+  assert.equal(feed.conversations[0].previews[0].message, 'A postgres reply');
+  assert.equal(feed.conversations[0].post.timestamp, post.timestamp);
+  const next = await store.conversationFeed({ limit: 1, cursor: feed.next_cursor });
+  assert.equal(next.conversations[0].post.id, quiet.id);
+  assert.equal(next.conversations[0].reply_count, 0);
   await store.setVote('social-1', post.id, 1);
   await store.setVote('social-1', post.id, -1);
   const votes = await store.executor.query('SELECT COUNT(*)::int AS n, MIN(value)::int AS value FROM votes');

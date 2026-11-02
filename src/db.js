@@ -3,7 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { AUDIT_RETENTION_MS, AUDIT_ROW_CAP, correlateEvents, isCompositionId, isRunId, summarizeRuns } from './ouija-diagnostics.js';
-import { canonicalPost, emptyStats, likePattern, offsetCursor, pageSize, SocialError } from './social.js';
+import { activityCursor, canonicalPost, emptyStats, likePattern, offsetCursor, pageSize, SocialError } from './social.js';
 
 export function openStore(path = process.env.DATABASE_PATH || './data/messages.sqlite') {
   if (path !== ':memory:') mkdirSync(dirname(resolve(path)), { recursive: true });
@@ -121,6 +121,33 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       record.root_id = row.root_id || row.parent_id;
     }
     return record;
+  }
+  function replyPreviews(ids) {
+    const grouped = new Map();
+    if (!ids.length) return grouped;
+    const marks = ids.map(() => '?').join(',');
+    const rows = db.prepare(`SELECT id, agent_name, message, timestamp, submission_method, account_id, parent_id, root_id, sequence, parent_name, parent_is_root, conversation_id
+      FROM (
+        SELECT m.id, m.agent_name, m.message, m.timestamp, m.submission_method, m.account_id, m.parent_id, m.root_id, m.sequence,
+          parent.agent_name AS parent_name,
+          CASE WHEN parent.parent_id IS NULL THEN 1 ELSE 0 END AS parent_is_root,
+          COALESCE(m.root_id, m.id) AS conversation_id,
+          ROW_NUMBER() OVER (PARTITION BY COALESCE(m.root_id, m.id) ORDER BY m.sequence DESC) AS rn
+        FROM messages m
+        LEFT JOIN messages parent ON parent.id = m.parent_id
+        WHERE m.parent_id IS NOT NULL AND COALESCE(m.root_id, m.id) IN (${marks})
+      ) ranked
+      WHERE rn <= 2
+      ORDER BY sequence ASC`).all(...ids);
+    for (const row of rows) {
+      const preview = shape(row);
+      preview.parent_name = row.parent_name || null;
+      preview.parent_is_root = row.parent_is_root === 1;
+      const list = grouped.get(row.conversation_id) || [];
+      list.push(preview);
+      grouped.set(row.conversation_id, list);
+    }
+    return grouped;
   }
   function threadFor(record) {
     if (!record.parent_id) return { parent_id: null, root_id: record.id };
@@ -304,6 +331,36 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       const rows = db.prepare(`SELECT ${columns},sequence FROM messages WHERE (id=? OR root_id=?) AND (? IS NULL OR sequence > ?) ORDER BY sequence ASC LIMIT ?`).all(rootId, rootId, after, after, size + 1);
       const page = rows.slice(0, size).map(shape);
       return { root_id: rootId, posts: page, next_cursor: rows.length > size ? String(rows[size - 1].sequence) : null };
+    },
+    conversationFeed({ limit = 8, cursor = null } = {}) {
+      const size = pageSize(limit, 8, 20);
+      const parsed = activityCursor(cursor);
+      if (cursor && !parsed) return { conversations: [], next_cursor: null };
+      const time = parsed?.time ?? null;
+      const sequence = parsed?.sequence ?? null;
+      const rows = db.prepare(`SELECT r.id, r.agent_name, r.message, r.timestamp, r.submission_method, r.account_id, r.parent_id, r.root_id, r.sequence,
+          activity.last_activity, activity.reply_count
+        FROM messages r
+        JOIN (
+          SELECT COALESCE(root_id, id) AS conversation_id, MAX(timestamp) AS last_activity,
+            SUM(CASE WHEN parent_id IS NOT NULL THEN 1 ELSE 0 END) AS reply_count
+          FROM messages GROUP BY COALESCE(root_id, id)
+        ) activity ON activity.conversation_id = r.id
+        WHERE r.parent_id IS NULL AND (? IS NULL OR activity.last_activity < ? OR (activity.last_activity = ? AND r.sequence < ?))
+        ORDER BY activity.last_activity DESC, r.sequence DESC LIMIT ?`).all(time, time, time, sequence, size + 1);
+      const page = rows.slice(0, size);
+      const previews = replyPreviews(page.map(row => row.id));
+      const last = page.at(-1);
+      return {
+        conversations: page.map(row => ({
+          post: shape(row),
+          reply_count: Number(row.reply_count) || 0,
+          last_activity_at: row.last_activity,
+          sequence: row.sequence,
+          previews: previews.get(row.id) || []
+        })),
+        next_cursor: rows.length > size && last ? `${last.last_activity}|${last.sequence}` : null
+      };
     },
     searchPosts(query, { limit = 20, cursor = null } = {}) {
       const size = pageSize(limit, 20, 50);

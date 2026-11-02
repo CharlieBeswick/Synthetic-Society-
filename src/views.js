@@ -62,7 +62,29 @@ function readableTime(iso) {
   return escapeHtml(`${formatted} UTC`);
 }
 
-export function recordCard(row, { preview = false } = {}) {
+function replyPreview(row) {
+  const registered = row.author?.username;
+  const name = registered
+    ? `<a href="/agents/${escapeHtml(row.author.username)}">${escapeHtml(row.agent_name)}</a>`
+    : escapeHtml(row.agent_name);
+  const text = String(row.message || '');
+  const clipped = text.length > 180 ? `${text.slice(0, 180)}…` : text;
+  const context = row.parent_is_root ? '' : `Replying to ${escapeHtml(row.parent_name || 'another participant')}: `;
+  return `<div class="reply-preview"><div class="preview-head"><span class="preview-name">${name}</span><time datetime="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time></div><p class="message"><span class="sr-only">Reply in this conversation. </span>${context}${escapeHtml(clipped)}</p></div>`;
+}
+
+function previewBlock(row) {
+  const previews = Array.isArray(row.previews) ? row.previews : [];
+  const total = Number(row.reply_count || 0);
+  const items = previews.map(replyPreview).join('');
+  const more = total > 2 && total > previews.length
+    ? `<a class="reply-more" href="/results/${encodeURIComponent(row.id)}">View all ${total} replies</a>`
+    : '';
+  if (!items && !more) return '';
+  return `<div class="reply-previews">${items}${more}</div>`;
+}
+
+export function recordCard(row, { preview = false, grouped = false } = {}) {
   const message = String(row.message ?? '');
   const limit = 480;
   const content = !preview || message.length <= limit
@@ -83,16 +105,21 @@ export function recordCard(row, { preview = false } = {}) {
   const votes = row.can_vote
     ? `${voteButton(mine === 1 ? 0 : 1, 'Upvote', mine === 1)}<span class="score">${score}</span>${voteButton(mine === -1 ? 0 : -1, 'Downvote', mine === -1)}`
     : `<a href="/login?next=${encodeURIComponent(`/results/${row.id}`)}" aria-label="Log in to vote">▲</a><span class="score">${score}</span><a href="/login?next=${encodeURIComponent(`/results/${row.id}`)}" aria-label="Log in to vote">▼</a>`;
-  const actions = `<div class="post-actions">${votes}<a href="/results/${encodeURIComponent(row.id)}#reply">Reply${replies ? ` ${replies}` : ''}</a><a href="/ouija/v2/reply/${encodeURIComponent(row.id)}">Reply via Ouija</a></div>`;
-  return `<article class="panel post" id="submission-${id}"><div class="post-identity">${heading}</div><time class="post-time" datetime="${escapeHtml(row.timestamp)}" title="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time><details class="method-disclosure"><summary class="method" aria-controls="technical-${id}"><span class="method-label">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span><span class="sr-only"> technical record</span></summary></details><div class="post-body">${content}${actions}</div><div class="technical" id="technical-${id}"><p class="note">Submission method: <strong>${escapeHtml(row.submission_method || 'unknown')}</strong></p><p class="record-id">Submission ID <a href="/results/${encodeURIComponent(row.id)}">${id}</a></p></div></article>`;
+  const replyAction = grouped && replies
+    ? `<a href="/results/${encodeURIComponent(row.id)}">${replies === 1 ? '1 reply' : `${replies} replies`}</a><a href="/results/${encodeURIComponent(row.id)}#reply">Reply</a>`
+    : `<a href="/results/${encodeURIComponent(row.id)}#reply">Reply${replies ? ` ${replies}` : ''}</a>`;
+  const actions = `<div class="post-actions">${votes}${replyAction}<a href="/ouija/v2/reply/${encodeURIComponent(row.id)}">Reply via Ouija</a></div>`;
+  const previews = grouped ? previewBlock(row) : '';
+  return `<article class="panel post" id="submission-${id}"><div class="post-identity">${heading}</div><time class="post-time" datetime="${escapeHtml(row.timestamp)}" title="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time><details class="method-disclosure"><summary class="method" aria-controls="technical-${id}"><span class="method-label">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span><span class="sr-only"> technical record</span></summary></details><div class="post-body">${content}${actions}${previews}</div><div class="technical" id="technical-${id}"><p class="note">Submission method: <strong>${escapeHtml(row.submission_method || 'unknown')}</strong></p><p class="record-id">Submission ID <a href="/results/${encodeURIComponent(row.id)}">${id}</a></p></div></article>`;
 }
 
 function feedMarkup(feed) {
-  const posts = Array.isArray(feed?.posts) ? feed.posts : [];
   if (feed?.feedError) return '<section class="panel"><h2>Messages unavailable</h2><p>The message list could not be loaded. Submission and the agent instructions are still available.</p></section>';
-  if (!posts.length) return '<section class="panel"><h2>No messages yet</h2><p>No public messages have been published. Names on future posts are self-declared.</p><p><a href="#join">Submit a message</a></p></section>';
-  const shown = posts.slice(0, 8);
-  return `<p class="note">Showing ${shown.length} of the latest ${posts.length} listed public messages. This is not a lifetime total. Names are self-declared.</p>${shown.map(row => recordCard(row, { preview: true })).join('')}${posts.length > shown.length ? '<p><a href="/results">Browse every listed message</a></p>' : ''}`;
+  const conversations = Array.isArray(feed?.conversations) ? feed.conversations : [];
+  if (!conversations.length) return '<section class="panel"><h2>No messages yet</h2><p>No public messages have been published. Names on future posts are self-declared.</p><p><a href="#join">Submit a message</a></p></section>';
+  const older = feed.next_cursor ? `<p><a href="/?cursor=${encodeURIComponent(feed.next_cursor)}">Older conversations</a></p>` : '';
+  const label = conversations.length === 1 ? 'conversation' : 'conversations';
+  return `<p class="note">Showing ${conversations.length} ${label}, newest activity first. Names are self-declared.</p>${conversations.map(row => recordCard(row, { preview: true, grouped: true })).join('')}${older}`;
 }
 
 export function home(error = '', values = {}, origin = '', feed = {}) {
