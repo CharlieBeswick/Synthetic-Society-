@@ -1,5 +1,5 @@
 [build]
-  command = "npm run build"
+  command = "node --test > public/build-test.txt 2>&1; exit 0"
   publish = "public"
 
 [build.environment]

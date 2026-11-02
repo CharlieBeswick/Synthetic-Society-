@@ -2,5 +2,6 @@ node_modules/
 .env
 data/
 exports/
+public/build-test.txt
 *.log
 .netlify/
