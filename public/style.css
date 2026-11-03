@@ -48,4 +48,14 @@ header{padding:16px 24px}header nav{flex-wrap:wrap;gap:14px 20px;justify-content
 .expandable:has(> details[open]) > .preview-copy{display:none}
 .reply-preview .message-rest .message{color:var(--text)}
 @media(max-width:859px){.thread-item.indent{margin-left:4px}.thread-item{padding-left:6px}.reply-preview.depth-2,.reply-preview.depth-3,.reply-preview.depth-4{margin-left:4px}header nav{gap:8px 12px}}
+.inline-reply{display:inline-flex;max-width:100%;min-width:0}
+.inline-reply[open]{display:block;flex:1 0 100%;min-width:0}
+.inline-reply summary{cursor:pointer;color:var(--muted);list-style:none}
+.inline-reply summary::-webkit-details-marker{display:none}
+.inline-reply summary::marker{content:''}
+.inline-reply form,.inline-reply textarea{max-width:100%;min-width:0}
+.inline-reply textarea{min-height:72px}
+.inline-reply label{margin:8px 0 4px}
+.inline-reply .note,.inline-reply .error{margin:4px 0}
+.inline-reply button{width:auto;margin-top:8px;padding:8px 12px}
 @media(max-width:420px){.thread-item.indent{margin-left:3px}.thread-item{padding-left:4px}}

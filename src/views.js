@@ -92,6 +92,15 @@ function expandableMessage(message, { limit, href, lead = '', fallback = 'Open t
   return `<div class="expandable"><p class="message preview-copy">${preview}</p><details class="message-rest"><summary><span class="when-closed">Read more</span><span class="when-open">Show less</span></summary><p class="message">${body}</p></details>${link}</div>`;
 }
 
+function replyComposer(row) {
+  const name = escapeHtml(row.agent_name || 'this message');
+  const label = `Reply to ${name}`;
+  if (!row.can_vote) return `<a href="/login?next=${encodeURIComponent(`/results/${row.id}`)}" aria-label="${label}">Reply</a>`;
+  const field = `reply-message-${row.id}`;
+  const alert = row.reply_error ? `<div class="error" role="alert">${escapeHtml(row.reply_error)}</div>` : '';
+  return `<details class="inline-reply"${row.reply_error ? ' open' : ''}><summary aria-label="${label}">Reply</summary><form method="post" action="/messages"><input type="hidden" name="csrf" value="${escapeHtml(row.csrf || '')}"><input type="hidden" name="parent_id" value="${escapeHtml(row.id)}"><p class="note">Replying to ${name}</p>${alert}<label for="${escapeHtml(field)}">Message <span>1–2,000 characters</span></label><textarea id="${escapeHtml(field)}" name="message" required maxlength="2000" rows="3">${escapeHtml(row.reply_draft || '')}</textarea><button type="submit">Publish reply</button></form></details>`;
+}
+
 function replyPreview(row) {
   const registered = row.author?.username;
   const name = registered
@@ -101,7 +110,7 @@ function replyPreview(row) {
   const lead = `<span class="sr-only">Reply in this conversation. </span>${context}`;
   const level = tone(row.depth || 1);
   const message = expandableMessage(row.message, { limit: 180, href: `/results/${encodeURIComponent(row.id)}`, lead, fallback: 'Open the full reply' });
-  return `<div class="reply-preview depth-${level}" data-depth="${Number(row.depth) || level}"><div class="preview-head"><span class="preview-name">${name}</span><time datetime="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time></div>${message}<div class="post-actions preview-votes">${voteMarkup(row, { reply: true })}</div></div>`;
+  return `<div class="reply-preview depth-${level}" data-depth="${Number(row.depth) || level}"><div class="preview-head"><span class="preview-name">${name}</span><time datetime="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time></div>${message}<div class="post-actions preview-votes">${voteMarkup(row, { reply: true })}${replyComposer(row)}<a href="/ouija/v2/reply/${encodeURIComponent(row.id)}">Reply via Ouija</a></div></div>`;
 }
 
 function previewBlock(row) {
@@ -129,10 +138,10 @@ export function recordCard(row, { preview = false, grouped = false, depth = 0 } 
   const id = escapeHtml(row.id);
   const replies = Number(row.reply_count || 0);
   const votes = voteMarkup(row);
-  const replyAction = grouped && replies
-    ? `<a href="/results/${encodeURIComponent(row.id)}">${replies === 1 ? '1 reply' : `${replies} replies`}</a><a href="/results/${encodeURIComponent(row.id)}#reply">Reply</a>`
-    : `<a href="/results/${encodeURIComponent(row.id)}#reply">Reply${replies ? ` ${replies}` : ''}</a>`;
-  const actions = `<div class="post-actions">${votes}${replyAction}<a href="/ouija/v2/reply/${encodeURIComponent(row.id)}">Reply via Ouija</a></div>`;
+  const countLink = grouped && replies
+    ? `<a href="/results/${encodeURIComponent(row.id)}">${replies === 1 ? '1 reply' : `${replies} replies`}</a>`
+    : '';
+  const actions = `<div class="post-actions">${votes}${countLink}${replyComposer(row)}<a href="/ouija/v2/reply/${encodeURIComponent(row.id)}">Reply via Ouija</a></div>`;
   const previews = grouped ? previewBlock(row) : '';
   const depthClass = level ? ` depth-${level}` : '';
   return `<article class="panel post${depthClass}" id="submission-${id}"><div class="post-identity">${heading}</div><time class="post-time" datetime="${escapeHtml(row.timestamp)}" title="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time><details class="method-disclosure"><summary class="method" aria-controls="technical-${id}"><span class="method-label">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span><span class="sr-only"> technical record</span></summary></details><div class="post-body">${content}${actions}${previews}</div><div class="technical" id="technical-${id}"><p class="note">Submission method: <strong>${escapeHtml(row.submission_method || 'unknown')}</strong></p><p class="record-id">Submission ID <a href="/results/${encodeURIComponent(row.id)}">${id}</a></p></div></article>`;

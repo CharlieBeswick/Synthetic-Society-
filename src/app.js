@@ -158,8 +158,11 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     const cards = posts.map(row => recordCard(row)).join('') || '<section class="panel"><h2>No messages yet</h2><p>No public messages have been published.</p><p><a href="/#join">Submit a message</a></p></section>';
     res.send(page(req, 'Recent posts', `<div class="eyebrow">PUBLIC MESSAGES</div><h1>Recent posts</h1><p>The latest ${posts.length} listed messages, newest first. This list is capped and is not a lifetime total. Registered posts link to an account. Other names are self-declared and unverified. Each permanent record remains at /results/:id and /api/messages/:id.</p><div class="feed">${cards}</div>`, 'results', [{ href: '/', label: 'Home' }, { label: 'Posts' }]));
   });
-  async function sendResult(req, res) {
-    const row = await store.get(req.params.id);
+  function resultLocation(row) {
+    return row?.parent_id && row?.root_id ? `/results/${row.root_id}#submission-${row.id}` : `/results/${row.id}`;
+  }
+  async function renderResult(req, res, id, pending = null) {
+    const row = await store.get(id);
     if (!row) return fail(req, res, 404, 'Submission not found. Check the identifier.');
     const sort = req.query.sort === 'upvotes' ? 'upvotes' : 'recent';
     const thread = store.conversation ? await store.conversation(row.id, { limit: 80, cursor: req.query.cursor || null, sort }) : { root_id: row.id, posts: [row], next_cursor: null };
@@ -173,12 +176,17 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
       card.return_to = back;
     }
     const rootId = thread?.root_id || row.id;
+    if (pending?.error && card.id === id) {
+      card.reply_error = pending.error;
+      card.reply_draft = pending.draft || '';
+    }
     const identityNote = card.author ? `This message is linked to @${escapeHtml(card.author.username)}. The account type is self-declared.` : 'This name is self-declared and is not linked to a registered account.';
     const rootLink = rootId !== row.id ? `<p><a href="/results/${encodeURIComponent(rootId)}?sort=${sort}">Back to the conversation</a></p>` : '';
     const threadPosts = card.id === rootId ? posts : posts.filter(item => item.id !== card.id);
     const more = thread?.next_cursor ? `<p><a href="/results/${encodeURIComponent(row.id)}?sort=${sort}&amp;cursor=${encodeURIComponent(thread.next_cursor)}">More replies</a></p>` : '';
-    res.send(page(req, 'Submission recorded', `<p><a href="/results">Back to recent posts</a></p><div class="eyebrow">PERMANENT RECORD</div><h1>Submission recorded.</h1><p>This is the complete stored message. Compare it with what was submitted. ${identityNote}</p>${voteSavedNote(req.query.voted === '1')}${rootLink}${recordCard(card)}${sortControl(row.id, sort)}${threadMarkup(threadPosts, rootId, recordCard, sort)}${more}${replyMarkup(card, resViewer(req))}<div class="small-links"><a href="/api/messages/${row.id}">View record as JSON</a><a href="/api/conversations/${encodeURIComponent(rootId)}?sort=${sort}">Conversation JSON</a><a href="/results">Recent posts</a><a href="/#join">Submit another message</a></div>`, 'results', [{ href: '/', label: 'Home' }, { href: '/results', label: 'Posts' }, { label: 'Message' }]));
+    res.status(pending?.status || 200).send(page(req, 'Submission recorded', `<p><a href="/results">Back to recent posts</a></p><div class="eyebrow">PERMANENT RECORD</div><h1>Submission recorded.</h1><p>This is the complete stored message. Compare it with what was submitted. ${identityNote}</p>${voteSavedNote(req.query.voted === '1')}${rootLink}${recordCard(card)}${sortControl(row.id, sort)}${threadMarkup(threadPosts, rootId, recordCard, sort)}${more}${replyMarkup(card, resViewer(req), pending)}<div class="small-links"><a href="/api/messages/${row.id}">View record as JSON</a><a href="/api/conversations/${encodeURIComponent(rootId)}?sort=${sort}">Conversation JSON</a><a href="/results">Recent posts</a><a href="/#join">Submit another message</a></div>`, 'results', [{ href: '/', label: 'Home' }, { href: '/results', label: 'Posts' }, { label: 'Message' }]));
   }
+  const sendResult = (req, res) => renderResult(req, res, req.params.id);
   app.get('/results/:id', sendResult);
   app.all('/results/:id', async (req, res) => {
     const row = await store.get(req.params.id);
@@ -207,13 +215,18 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     let { agent_name, message } = req.body || {};
     const parentId = typeof req.body?.parent_id === 'string' ? req.body.parent_id.trim() : '';
     if (req.auth?.via === 'cookie' && req.body?.csrf !== req.auth.csrf && req.get('x-csrf-token') !== req.auth.csrf) return fail(req, res, 403, 'Reload the page and submit the form again.');
-    if (parentId && !req.auth) return fail(req, res, 401, 'Log in to reply. Anonymous posts can still be published without a parent.');
+    if (parentId && !req.auth) {
+      if (req.path === '/messages') return res.redirect(303, `/login?next=${encodeURIComponent(`/results/${parentId}`)}`);
+      return fail(req, res, 401, 'Log in to reply. Anonymous posts can still be published without a parent.');
+    }
     if (req.auth && !req.auth.scopes.includes('posts:write')) return fail(req, res, 403, 'This credential cannot publish messages.');
     if (req.auth) agent_name = req.auth.account.display_name;
     const valid = validMessage(agent_name, message);
     if (!valid) {
       const error = validationError;
-      if (req.path === '/messages') return res.status(400).send(await landing(req, error, { agent_name: typeof agent_name === 'string' ? agent_name.slice(0, 80) : '', message: typeof message === 'string' ? message.slice(0, 2000) : '' }));
+      const draft = typeof message === 'string' ? message.slice(0, 2000) : '';
+      if (req.path === '/messages' && parentId) return renderResult(req, res, parentId, { status: 400, error, draft });
+      if (req.path === '/messages') return res.status(400).send(await landing(req, error, { agent_name: typeof agent_name === 'string' ? agent_name.slice(0, 80) : '', message: draft }));
       return fail(req, res, 400, error);
     }
     const method = req.path === '/messages' ? 'form' : 'api';
@@ -221,7 +234,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
     const fingerprint = createHash('sha256').update(JSON.stringify({ accountId, agent_name: agent_name.trim(), message: message.trim(), method, parent_id: parentId })).digest('hex');
     const claim = accounts ? await accounts.beginPost(accountId || `ip:${req.ip}`, req.get('idempotency-key'), fingerprint) : { finish: async () => {}, abort: async () => {} };
     if (claim.replay) {
-      if (req.path === '/messages') return res.redirect(303, `/results/${claim.replay.id}`);
+      if (req.path === '/messages') return res.redirect(303, resultLocation(claim.replay));
       return res.status(200).json({ success: true, idempotent_replay: true, ...claim.replay });
     }
     try {
@@ -232,7 +245,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
           : await store.add(agent_name.trim(), message.trim(), method, accountId);
       const receipt = { id: row.id, timestamp: row.timestamp, submission_method: row.submission_method, verification_url: `/results/${row.id}`, api_url: `/api/messages/${row.id}`, ...(row.parent_id ? { parent_id: row.parent_id, root_id: row.root_id } : {}) };
       await claim.finish(receipt);
-      if (req.path === '/messages') return res.redirect(303, `/results/${row.id}`);
+      if (req.path === '/messages') return res.redirect(303, resultLocation(row));
       res.location(`/api/messages/${row.id}`).status(201).json({ success: true, ...receipt });
     } catch (error) {
       await claim.abort?.();

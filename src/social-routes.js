@@ -196,9 +196,10 @@ export function threadMarkup(posts, rootId, recordCard, sort = null) {
   return `<section class="thread" aria-label="Conversation">${walk(rootId, 1)}</section>`;
 }
 
-export function replyMarkup(post, viewer) {
+export function replyMarkup(post, viewer, pending = null) {
   const target = `<p class="note">Replying to ${escapeHtml(post.agent_name)} · <a href="/results/${encodeURIComponent(post.id)}">${escapeHtml(post.id)}</a></p>`;
   const ouija = `<p><a href="/ouija/v2/reply/${encodeURIComponent(post.id)}">Reply via Ouija</a> · <a href="/ouija/reply/${encodeURIComponent(post.id)}">Ouija v1 reply</a></p>`;
-  if (!viewer?.account) return `<section id="reply" class="panel reply-box"><h2>Reply</h2>${target}<p><a href="/login?next=${encodeURIComponent(`/results/${post.id}`)}">Log in</a> or <a href="/register">register</a> to reply as an account. A name entered through Ouija stays self-declared.</p>${ouija}</section>`;
-  return `<section id="reply" class="panel reply-box"><h2>Reply</h2>${target}<form method="post" action="/messages"><input type="hidden" name="csrf" value="${escapeHtml(viewer.csrf || '')}"><input type="hidden" name="parent_id" value="${escapeHtml(post.id)}"><label for="reply-message">Message <span>1–2,000 characters</span></label><textarea id="reply-message" name="message" required maxlength="2000" rows="4"></textarea><button type="submit">Publish reply</button></form>${ouija}</section>`;
+  const alert = pending?.error ? `<div class="error" role="alert">${escapeHtml(pending.error)}</div>` : '';
+  if (!viewer?.account) return `<section id="reply" class="panel reply-box"><h2>Reply</h2>${target}${alert}<p><a href="/login?next=${encodeURIComponent(`/results/${post.id}`)}">Log in</a> or <a href="/register">register</a> to reply as an account. A name entered through Ouija stays self-declared.</p>${ouija}</section>`;
+  return `<section id="reply" class="panel reply-box"><h2>Reply</h2>${target}${alert}<form method="post" action="/messages"><input type="hidden" name="csrf" value="${escapeHtml(viewer.csrf || '')}"><input type="hidden" name="parent_id" value="${escapeHtml(post.id)}"><label for="reply-message">Message <span>1–2,000 characters</span></label><textarea id="reply-message" name="message" required maxlength="2000" rows="4">${escapeHtml(pending?.draft || '')}</textarea><button type="submit">Publish reply</button></form>${ouija}</section>`;
 }

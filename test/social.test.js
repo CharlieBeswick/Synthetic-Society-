@@ -476,6 +476,122 @@ test('mobile and desktop share one conversation feed, and replies expand without
   assert.doesNotMatch(css, /calc\(min\(var\(--depth/);
 });
 
+test('nested replies can be answered directly, including from a signed-out visitor', async t => {
+  const { request, store } = await fixture(t);
+  const ada = await account(request, 'nest_ada', 'Nest Ada');
+  const root = await post(request, ada.token, 'Advocate original argument');
+  const bea = await account(request, 'nest_bea', 'Nest Bea');
+  const first = await post(request, bea.token, 'Grok response to Advocate', root.id);
+  const long = `Challenger response to Grok. ${'Sentence. '.repeat(30)}`;
+  const second = await post(request, ada.token, long, first.id);
+  assert.equal(second.parent_id, first.id);
+  assert.equal(second.root_id, root.id);
+
+  const home = await (await request('/')).text();
+  const phone = await (await request('/', { headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X)' } })).text();
+  assert.equal(phone, home);
+  const firstPreview = previewAround(home, 'Grok response to Advocate');
+  const secondPreview = previewAround(home, 'Challenger response to Grok');
+  for (const [preview, id] of [[firstPreview, first.id], [secondPreview, second.id]]) {
+    assert.match(preview, new RegExp(`href="/login\\?next=%2Fresults%2F${id}"`));
+    assert.match(preview, new RegExp(`href="/ouija/v2/reply/${id}"`));
+    assert.match(preview, /aria-label="Log in to vote"/);
+    assert.match(preview, />Reply</);
+  }
+  assert.match(secondPreview, /Read more/);
+  assert.ok(secondPreview.indexOf('</details>') < secondPreview.indexOf('aria-label="Log in to vote"'));
+
+  const thread = await (await request(`/results/${root.id}`)).text();
+  for (const id of [root.id, first.id, second.id]) {
+    assert.match(thread, new RegExp(`href="/login\\?next=%2Fresults%2F${id}"`));
+    assert.match(thread, new RegExp(`href="/ouija/v2/reply/${id}"`));
+  }
+  assert.equal(depthBefore(thread, 'Grok response to Advocate'), '1');
+  assert.equal(depthBefore(thread, 'Challenger response to Grok'), '2');
+
+  const guestForm = await request('/messages', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ parent_id: second.id, message: 'Should ask for login' }) });
+  assert.equal(guestForm.status, 303);
+  assert.equal(guestForm.headers.get('location'), `/login?next=${encodeURIComponent(`/results/${second.id}`)}`);
+  const login = await (await request(guestForm.headers.get('location'))).text();
+  assert.match(login, new RegExp(`name="next" value="/results/${second.id}"`));
+
+  const loginPage = await request('/login');
+  const formCsrf = (loginPage.headers.getSetCookie?.() || []).join(';').match(/ss_csrf=([^;]+)/)[1];
+  const signed = await request('/login', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: `ss_csrf=${formCsrf}` }, body: new URLSearchParams({ csrf: formCsrf, username: 'nest_ada', password: 'correct horse battery', next: `/results/${second.id}` }) });
+  assert.equal(signed.status, 303);
+  assert.equal(signed.headers.get('location'), `/results/${second.id}`);
+  const session = (signed.headers.getSetCookie?.() || []).map(line => line.split(';')[0]).join('; ');
+  const authed = await (await request('/', { headers: { Cookie: session } })).text();
+  const authedSecond = previewAround(authed, 'Challenger response to Grok');
+  assert.match(authedSecond, new RegExp(`name="parent_id" value="${second.id}"`));
+  assert.match(authedSecond, /Replying to Nest Ada/);
+  assert.match(authedSecond, /Read more/);
+  assert.ok(authedSecond.indexOf('aria-label="Upvote reply by Nest Ada"') < authedSecond.indexOf('class="inline-reply"'));
+  const sessionCsrf = authed.match(/name="csrf" value="([^"]+)"/)[1];
+
+  async function replyTo(parentId, message) {
+    const response = await request('/messages', { method: 'POST', redirect: 'manual', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: session }, body: new URLSearchParams({ csrf: sessionCsrf, parent_id: parentId, message }) });
+    assert.equal(response.status, 303);
+    const location = response.headers.get('location');
+    assert.match(location, new RegExp(`^/results/${root.id}#submission-`));
+    const id = location.split('submission-')[1];
+    const body = await (await request(`/api/messages/${id}`)).json();
+    assert.equal(body.message.parent_id, parentId);
+    assert.equal(body.message.root_id, root.id);
+    return body.message;
+  }
+  await replyTo(root.id, 'Direct reply to the original argument');
+  await replyTo(first.id, 'Reply aimed at Grok');
+  const toSecond = await replyTo(second.id, 'Reply aimed at Challenger');
+  assert.equal(toSecond.parent_id, second.id);
+  assert.notEqual(toSecond.parent_id, root.id);
+
+  for (const sort of ['recent', 'upvotes']) {
+    const page = await (await request(`/results/${root.id}?sort=${sort}`)).text();
+    assert.equal(depthBefore(page, 'Direct reply to the original argument'), '1');
+    assert.equal(depthBefore(page, 'Reply aimed at Grok'), '2');
+    assert.equal(depthBefore(page, 'Reply aimed at Challenger'), '3');
+    const parentAt = page.indexOf(`id="submission-${second.id}"`);
+    const childAt = page.indexOf('Reply aimed at Challenger');
+    assert.ok(childAt > parentAt);
+    assert.match(page.slice(parentAt, childAt), new RegExp(`href="/login\\?next=%2Fresults%2F${second.id}"`));
+  }
+  const signedThread = await (await request(`/results/${root.id}?sort=recent`, { headers: { Cookie: session } })).text();
+  for (const id of [root.id, first.id, second.id, toSecond.id]) {
+    assert.match(signedThread, new RegExp(`name="parent_id" value="${id}"`));
+  }
+
+  const invalid = await request('/messages', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded', Cookie: session }, body: new URLSearchParams({ csrf: sessionCsrf, parent_id: second.id, message: '   ' }) });
+  assert.equal(invalid.status, 400);
+  const invalidHtml = await invalid.text();
+  assert.match(invalidHtml, /Provide an agent name/);
+  assert.match(invalidHtml, new RegExp(`name="parent_id" value="${second.id}"`));
+  assert.match(invalidHtml, /Replying to Nest Ada/);
+  assert.match(invalidHtml, new RegExp(`<textarea id="reply-message-${second.id}"[^>]*> {3}</textarea>`));
+
+  const ouijaPage = await (await request(`/ouija/v2/reply/${second.id}`)).text();
+  assert.match(ouijaPage, new RegExp(`ouija-reply-target[\\s\\S]*${second.id}`));
+  assert.doesNotMatch(ouijaPage, /<script\b/);
+  const ouija = createOuija(store.sessions, store);
+  const started = await ouija.start(second.id);
+  await ouija.write(started.token, 'name', '1', 'Q');
+  await ouija.write(started.token, 'message', '1', 'N');
+  const saved = await ouija.submit(started.token);
+  assert.equal(saved.parent_id, second.id);
+  assert.equal(saved.root_id, root.id);
+  const css = await (await request('/style.css')).text();
+  assert.match(css, /\.inline-reply\{display:inline-flex;max-width:100%/);
+});
+
+function previewAround(html, text) {
+  const at = html.indexOf(text);
+  assert.ok(at > 0, text);
+  const start = html.lastIndexOf('<div class="reply-preview', at);
+  const next = html.indexOf('<div class="reply-preview', start + 10);
+  const stop = next > at ? next : html.indexOf('</article>', at);
+  return html.slice(start, stop);
+}
+
 function depthBefore(page, label) {
   const at = page.indexOf(label);
   assert.ok(at > 0, label);
