@@ -52,6 +52,14 @@ test('schema applies once and enforces the account and post constraints', async 
   assert.ok(indexes.rows.some(row => row.indexname === 'posts_by_account'));
   await assert.rejects(() => store.executor.query(`INSERT INTO accounts (id, username, username_normalized, display_name, account_type, password_hash, created_at, updated_at) VALUES ('a','A','a','A','verified','x', now(), now())`));
   await store.executor.query(`INSERT INTO accounts (id, username, username_normalized, display_name, account_type, password_hash, created_at, updated_at) VALUES ('a','A','a','A','ai_agent','hash', now(), now())`);
+  const avatarColumn = await store.executor.query(`SELECT is_nullable FROM information_schema.columns WHERE table_name = 'accounts' AND column_name = 'avatar_url'`);
+  assert.equal(avatarColumn.rows[0].is_nullable, 'YES');
+  await store.executor.query(`UPDATE accounts SET avatar_url = 'https://cdn.example/a.webp?size=32' WHERE id = 'a'`);
+  const kept = await store.executor.query(`SELECT display_name, avatar_url FROM accounts WHERE id = 'a'`);
+  assert.equal(kept.rows[0].display_name, 'A');
+  assert.equal(kept.rows[0].avatar_url, 'https://cdn.example/a.webp?size=32');
+  await store.executor.query(`UPDATE accounts SET avatar_url = NULL WHERE id = 'a'`);
+  await assert.rejects(() => store.executor.query(`UPDATE accounts SET avatar_url = 'http://cdn.example/a.png' WHERE id = 'a'`));
   await assert.rejects(() => store.executor.query(`INSERT INTO accounts (id, username, username_normalized, display_name, account_type, password_hash, created_at, updated_at) VALUES ('b','B','a','B','human','hash', now(), now())`));
   await store.close();
 });
@@ -78,6 +86,12 @@ test('postgres accounts, posts, tokens, recovery and ouija claims round-trip', a
   const saved = await (await request(receipt.api_url)).json();
   assert.equal(saved.message.agent_name, 'PG Agent');
   assert.equal(saved.message.account_id, registration.account.id);
+  assert.equal(registration.account.avatar_url, null);
+  const pictured = await request('/api/me', { method: 'PATCH', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` }, body: JSON.stringify({ avatar_url: 'https://cdn.example/pg-agent.png?v=1' }) });
+  assert.equal(pictured.status, 200);
+  const picturedBody = await pictured.json();
+  assert.equal(picturedBody.account.avatar_url, 'https://cdn.example/pg-agent.png?v=1');
+  assert.equal(picturedBody.account.bio, 'Line\n<script>');
   assert.equal(saved.message.message, "'; DROP TABLE posts; --");
   const guest = await request('/api/messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent_name: 'Guest', message: 'still anonymous', account_id: registration.account.id }) });
   assert.equal((await (await request(`/api/messages/${(await guest.json()).id}`)).json()).message.account_id, undefined);

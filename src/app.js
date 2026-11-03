@@ -29,7 +29,7 @@ export function createApp(store, { trustProxy = false, submissionLimit = 20, gen
   app.disable('x-powered-by');
   app.set('trust proxy', trustProxy);
   app.use((req, res, next) => {
-    res.set({ 'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
+    res.set({ 'Content-Security-Policy': "default-src 'none'; style-src 'self'; script-src 'self'; img-src https:; connect-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'", 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer', 'Cache-Control': 'no-store' });
     if (req.path.startsWith('/api/session') || /^\/messagesubmit0[1-5]$/.test(req.path)) res.set({ 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': 'no-store, private' });
     if (privateOuijaPath(req.path)) res.set({ 'X-Robots-Tag': 'noindex, nofollow, noarchive', 'Cache-Control': ouijaDynamicCacheControl, 'CDN-Cache-Control': 'no-store', 'Netlify-CDN-Cache-Control': 'no-store', 'Content-Security-Policy': "default-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'" });
     next();

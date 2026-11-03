@@ -419,7 +419,7 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
         const bio = String(account.bio || '').toLowerCase();
         const capabilities = String(account.capabilities || '').toLowerCase();
         if (![username, display, bio, capabilities].some(field => field.includes(needle))) continue;
-        matches.push({ id: account.id, username: account.username, display_name: account.display_name, exact: username === needle, created_at: account.created_at || '' });
+        matches.push({ id: account.id, username: account.username, display_name: account.display_name, avatar_url: account.avatar_url || null, exact: username === needle, created_at: account.created_at || '' });
       }
       matches.sort((left, right) => Number(right.exact) - Number(left.exact) || String(right.created_at).localeCompare(String(left.created_at)));
       const page = matches.slice(offset, offset + size);

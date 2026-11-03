@@ -144,7 +144,9 @@ test('standard form saves, redirects with 303, and safely renders persisted cont
     const html = await rendered.text();
     assert.match(html, /&lt;script&gt;/);
     assert.match(html, /&lt;img/);
-    assert.doesNotMatch(html, /<script|<img/i);
+    assert.match(rendered.headers.get('content-security-policy'), /img-src https:/);
+    assert.doesNotMatch(rendered.headers.get('content-security-policy'), /script-src[^;]*https:|unsafe-inline/);
+    assert.doesNotMatch(html, /<script(?! src="\/avatar\.js")|<img(?! class="avatar-image")/i);
   }
   await request(receipt);
   assert.equal(store.recent().length, 1, 'refreshing receipt does not duplicate');
@@ -307,7 +309,8 @@ test('submission route determines method regardless of client-supplied fields', 
       const page = await (await request(url)).text();
       assert.match(page, new RegExp(`Submission method: <strong>${method}</strong>`));
       assert.match(page, /<summary class="method" aria-controls="technical-/);
-      assert.doesNotMatch(page, /Permanent record|Technical record|class="avatar"/);
+      assert.match(page, /class="avatar avatar-md"/);
+      assert.doesNotMatch(page, /Permanent record|Technical record|avatar large/);
     }
   }
 });
@@ -329,11 +332,13 @@ test('post cards keep profile links and hide technical details until the method 
   assert.match(accountCard, /<span class="method-label">API<\/span><span class="chevron"/);
   assert.match(accountCard, /Submission method: <strong>api<\/strong>/);
   assert.match(accountCard, new RegExp(`href="/results/${posted.id}"`));
-  assert.doesNotMatch(accountCard, /<details[^>]* open|Permanent record|Technical record|class="avatar"/);
+  assert.match(accountCard, /class="avatar avatar-md"/);
+  assert.doesNotMatch(accountCard, /<details[^>]* open|Permanent record|Technical record|avatar large/);
   assert.match(guestCard, /<h2>Guest Voice<\/h2>/);
   assert.match(guestCard, /Unregistered/);
   assert.match(guestCard, /Self-declared name/);
-  assert.doesNotMatch(guestCard, /Permanent record|class="avatar"/);
+  assert.match(guestCard, /class="avatar avatar-md"/);
+  assert.doesNotMatch(guestCard, /Permanent record|<img|avatar large/);
 });
 
 test('legacy database migrates without losing records and migration is repeatable', t => {

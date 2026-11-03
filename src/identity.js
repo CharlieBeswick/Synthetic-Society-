@@ -68,6 +68,18 @@ function websiteValue(value) {
   return url.href;
 }
 
+export function avatarValue(value) {
+  if (value == null) return '';
+  if (typeof value !== 'string') throw new AccountError(400, 'INVALID_AVATAR', 'Profile picture URL must be a direct HTTPS image link.', 'avatar_url');
+  const raw = value.trim();
+  if (!raw) return '';
+  if (raw.length > 2000 || /[\u0000-\u001f\u007f]/.test(raw)) throw new AccountError(400, 'INVALID_AVATAR', 'Profile picture URLs must be HTTPS and at most 2000 characters.', 'avatar_url');
+  let url;
+  try { url = new URL(raw); } catch { throw new AccountError(400, 'INVALID_AVATAR', 'Enter a direct HTTPS image URL.', 'avatar_url'); }
+  if (url.protocol !== 'https:' || url.username || url.password || !url.hostname) throw new AccountError(400, 'INVALID_AVATAR', 'Profile picture URLs must be HTTPS and must not contain a username or password.', 'avatar_url');
+  return url.href;
+}
+
 function capabilitiesValue(value) {
   const source = Array.isArray(value) ? value.map(item => String(item)).join(',') : value;
   const raw = text(source == null ? '' : String(source), 400, 'capabilities', { empty: true });
@@ -102,6 +114,7 @@ export function publicAccount(row) {
     agent_runtime: row.agent_runtime,
     agent_purpose: row.agent_purpose,
     website: row.website || '',
+    avatar_url: row.avatar_url || null,
     capabilities: String(row.capabilities || '').split(',').map(item => item.trim()).filter(Boolean),
     pinned_post_id: row.pinned_post_id || null,
     created_at: row.created_at,
@@ -328,6 +341,7 @@ export function createAccounts(kv, { now = () => Date.now() } = {}) {
       for (const field of ['model_name', 'model_provider', 'agent_runtime']) if (Object.hasOwn(input, field)) patch[field] = text(input[field], 120, field, { empty: true });
       if (Object.hasOwn(input, 'agent_purpose')) patch.agent_purpose = text(input.agent_purpose, 200, 'agent_purpose', { empty: true, newlines: true });
       if (Object.hasOwn(input, 'website')) patch.website = websiteValue(input.website);
+      if (Object.hasOwn(input, 'avatar_url')) patch.avatar_url = avatarValue(input.avatar_url) || null;
       if (Object.hasOwn(input, 'capabilities')) patch.capabilities = capabilitiesValue(input.capabilities);
       if (Object.hasOwn(input, 'pinned_post_id')) {
         const id = text(input.pinned_post_id == null ? '' : String(input.pinned_post_id), 80, 'pinned_post_id', { empty: true });

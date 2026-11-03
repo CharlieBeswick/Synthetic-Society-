@@ -1,7 +1,7 @@
 import express from 'express';
 import { AccountError } from './identity.js';
 import { SocialError, compareReplies, safeReturn } from './social.js';
-import { escapeHtml } from './views.js';
+import { avatar, escapeHtml } from './views.js';
 
 const field = (body, name) => (body && typeof body[name] === 'string' ? body[name] : '');
 
@@ -89,9 +89,24 @@ export function mountSocialRoutes(app, { store, accounts, page, enrich, recordCa
     const account = await accountByName(req.params.username);
     const pageResult = await store.listFollows(account.id, direction, { limit: req.query.limit, cursor: req.query.cursor || null });
     const loaded = await accounts.accountsByIds(pageResult.ids);
-    const accountsPage = pageResult.ids.map(id => loaded.get(id)).filter(row => row && row.status === 'active').map(row => ({ username: row.username, display_name: row.display_name, profile_url: `/agents/${row.username}` }));
+    const accountsPage = pageResult.ids.map(id => loaded.get(id)).filter(row => row && row.status === 'active').map(row => ({ username: row.username, display_name: row.display_name, avatar_url: row.avatar_url || null, profile_url: `/agents/${row.username}` }));
     res.json({ success: true, username: account.username, [direction]: accountsPage, next_cursor: pageResult.next_cursor });
   }
+  function accountList(rows) {
+    return rows.map(account => `<li>${avatar({ username: account.username, display_name: account.display_name, avatar_url: account.avatar_url || null }, { size: 'sm', href: '' })}<a href="/agents/${escapeHtml(account.username)}">${escapeHtml(account.display_name)}</a> <span class="handle">@${escapeHtml(account.username)}</span></li>`).join('');
+  }
+  async function renderFollowPage(req, res, direction) {
+    const account = await accountByName(req.params.username);
+    const pageResult = await store.listFollows(account.id, direction, { limit: 50, cursor: req.query.cursor || null });
+    const loaded = await accounts.accountsByIds(pageResult.ids);
+    const rows = pageResult.ids.map(id => loaded.get(id)).filter(row => row && row.status === 'active');
+    const title = direction === 'followers' ? 'Followers' : 'Following';
+    const items = accountList(rows);
+    const more = pageResult.next_cursor ? `<p><a href="/agents/${encodeURIComponent(account.username)}/${direction}?cursor=${encodeURIComponent(pageResult.next_cursor)}">More</a></p>` : '';
+    res.send(page(req, title, `<p><a href="/agents/${encodeURIComponent(account.username)}">@${escapeHtml(account.username)}</a></p><h1>${title}</h1>${items ? `<ul class="account-results">${items}</ul>${more}` : `<p>No ${direction} yet.</p>`}`, '', [{ href: '/', label: 'Home' }, { href: `/agents/${account.username}`, label: `@${account.username}` }, { label: title }]));
+  }
+  app.get('/agents/:username/followers', ready, handle((req, res) => renderFollowPage(req, res, 'followers')));
+  app.get('/agents/:username/following', ready, handle((req, res) => renderFollowPage(req, res, 'following')));
   app.get('/api/agents/:username/followers', ready, handle((req, res) => followList(req, res, 'followers')));
   app.get('/api/agents/:username/following', ready, handle((req, res) => followList(req, res, 'following')));
 
@@ -126,7 +141,7 @@ export function mountSocialRoutes(app, { store, accounts, page, enrich, recordCa
       accountCursor = accountPage.next_cursor;
     }
     const cards = posts.map(row => recordCard(row)).join('') || (query ? '<p>No matching posts.</p>' : '');
-    const people = foundAccounts.map(account => `<li><a href="/agents/${escapeHtml(account.username)}">${escapeHtml(account.display_name)}</a> <span class="handle">@${escapeHtml(account.username)}</span></li>`).join('');
+    const people = accountList(foundAccounts);
     const more = postCursor ? `<p><a href="/search?q=${encodeURIComponent(query)}&amp;cursor=${encodeURIComponent(postCursor)}">More posts</a></p>` : '';
     const moreAccounts = accountCursor ? `<p><a href="/search?q=${encodeURIComponent(query)}&amp;account_cursor=${encodeURIComponent(accountCursor)}">More accounts</a></p>` : '';
     res.send(page(req, 'Search', `<div class="eyebrow">DISCOVERY</div><h1>Search</h1><form class="search-form" method="get" action="/search"><label for="q">Posts and accounts</label><input id="q" name="q" maxlength="80" value="${escapeHtml(query)}" required><button type="submit">Search</button></form>${query ? `<p class="note">${posts.length} post${posts.length === 1 ? '' : 's'} and ${foundAccounts.length} account${foundAccounts.length === 1 ? '' : 's'} on this page.</p><h2>Accounts</h2>${people ? `<ul class="account-results">${people}</ul>${moreAccounts}` : '<p>No matching registered accounts.</p>'}<h2>Posts</h2><div class="feed">${cards}${more}</div>` : '<p>Search public posts and registered accounts. Anonymous display names are not accounts.</p>'}`, 'search', [{ href: '/', label: 'Home' }, { label: 'Search' }]));
@@ -143,7 +158,7 @@ export function mountSocialRoutes(app, { store, accounts, page, enrich, recordCa
     }
     if (type !== 'posts') {
       const accountPage = await store.searchAccounts(query, { limit: req.query.limit, cursor: req.query.account_cursor || null });
-      body.accounts = accountPage.accounts.map(account => ({ username: account.username, display_name: account.display_name, profile_url: `/agents/${account.username}` }));
+      body.accounts = accountPage.accounts.map(account => ({ username: account.username, display_name: account.display_name, avatar_url: account.avatar_url || null, profile_url: `/agents/${account.username}` }));
       body.account_cursor = accountPage.next_cursor;
     }
     res.json(body);

@@ -152,6 +152,7 @@ function accountValue(row) {
     agent_runtime: row.agent_runtime || '',
     agent_purpose: row.agent_purpose || '',
     website: row.website || '',
+    avatar_url: row.avatar_url || null,
     capabilities: row.capabilities || '',
     pinned_post_id: row.pinned_post_id || null,
     created_at: iso(row.created_at),
@@ -282,8 +283,8 @@ export function createPostgresIdentity(executor) {
     async swap(key, value, version) {
       let result;
       if (key.startsWith('account/')) {
-        result = await query(`UPDATE accounts SET display_name=$1, account_type=$2, password_hash=$3, bio=$4, model_name=$5, model_provider=$6, agent_runtime=$7, agent_purpose=$8, website=$9, capabilities=$10, pinned_post_id=$11, status=$12, updated_at=$13, last_login_at=$14, version=version+1 WHERE id=$15 AND version=$16`, [
-          value.display_name, value.account_type, value.password_hash, value.bio || '', value.model_name || '', value.model_provider || '', value.agent_runtime || '', value.agent_purpose || '', value.website || '', value.capabilities || '', value.pinned_post_id || null, value.status || 'active', value.updated_at, value.last_login_at, key.slice('account/'.length), version
+        result = await query(`UPDATE accounts SET display_name=$1, account_type=$2, password_hash=$3, bio=$4, model_name=$5, model_provider=$6, agent_runtime=$7, agent_purpose=$8, website=$9, capabilities=$10, pinned_post_id=$11, avatar_url=$12, status=$13, updated_at=$14, last_login_at=$15, version=version+1 WHERE id=$16 AND version=$17`, [
+          value.display_name, value.account_type, value.password_hash, value.bio || '', value.model_name || '', value.model_provider || '', value.agent_runtime || '', value.agent_purpose || '', value.website || '', value.capabilities || '', value.pinned_post_id || null, value.avatar_url || null, value.status || 'active', value.updated_at, value.last_login_at, key.slice('account/'.length), version
         ]);
       } else if (key.startsWith('session/') && !key.startsWith('session-of/')) {
         result = await query('UPDATE sessions SET revoked_at=$1, expires_at=$2, version=version+1 WHERE secret_hash=$3 AND version=$4', [value.revoked_at, value.expires_at, key.slice('session/'.length), version]);
@@ -653,12 +654,12 @@ export function createStoreFromExecutor(executor, { now = () => Date.now() } = {
       const pattern = likePattern(text);
       let result;
       try {
-        result = await query(`SELECT id, username, display_name, created_at, username_normalized FROM accounts WHERE status = 'active' AND (username_normalized = $1 OR username_normalized ILIKE $2 ESCAPE '\\' OR display_name ILIKE $2 ESCAPE '\\' OR bio ILIKE $2 ESCAPE '\\' OR capabilities ILIKE $2 ESCAPE '\\' OR to_tsvector('english', username || ' ' || display_name || ' ' || coalesce(bio, '') || ' ' || coalesce(capabilities, '')) @@ plainto_tsquery('english', $3)) ORDER BY CASE WHEN username_normalized = $1 THEN 0 ELSE 1 END, created_at DESC LIMIT $4 OFFSET $5`, [exact, pattern, text, size + 1, offset]);
+        result = await query(`SELECT id, username, display_name, avatar_url, created_at, username_normalized FROM accounts WHERE status = 'active' AND (username_normalized = $1 OR username_normalized ILIKE $2 ESCAPE '\\' OR display_name ILIKE $2 ESCAPE '\\' OR bio ILIKE $2 ESCAPE '\\' OR capabilities ILIKE $2 ESCAPE '\\' OR to_tsvector('english', username || ' ' || display_name || ' ' || coalesce(bio, '') || ' ' || coalesce(capabilities, '')) @@ plainto_tsquery('english', $3)) ORDER BY CASE WHEN username_normalized = $1 THEN 0 ELSE 1 END, created_at DESC LIMIT $4 OFFSET $5`, [exact, pattern, text, size + 1, offset]);
       } catch (error) {
         if (error?.name !== 'DatabaseError') throw error;
-        result = await query(`SELECT id, username, display_name, created_at, username_normalized FROM accounts WHERE status = 'active' AND (username_normalized = $1 OR username_normalized ILIKE $2 ESCAPE '\\' OR display_name ILIKE $2 ESCAPE '\\' OR bio ILIKE $2 ESCAPE '\\' OR capabilities ILIKE $2 ESCAPE '\\') ORDER BY CASE WHEN username_normalized = $1 THEN 0 ELSE 1 END, created_at DESC LIMIT $3 OFFSET $4`, [exact, pattern, size + 1, offset]);
+        result = await query(`SELECT id, username, display_name, avatar_url, created_at, username_normalized FROM accounts WHERE status = 'active' AND (username_normalized = $1 OR username_normalized ILIKE $2 ESCAPE '\\' OR display_name ILIKE $2 ESCAPE '\\' OR bio ILIKE $2 ESCAPE '\\' OR capabilities ILIKE $2 ESCAPE '\\') ORDER BY CASE WHEN username_normalized = $1 THEN 0 ELSE 1 END, created_at DESC LIMIT $3 OFFSET $4`, [exact, pattern, size + 1, offset]);
       }
-      return { accounts: result.rows.slice(0, size).map(row => ({ id: row.id, username: row.username, display_name: row.display_name, exact: row.username_normalized === exact, created_at: iso(row.created_at) })), next_cursor: result.rows.length > size ? String(offset + size) : null };
+      return { accounts: result.rows.slice(0, size).map(row => ({ id: row.id, username: row.username, display_name: row.display_name, avatar_url: row.avatar_url || null, exact: row.username_normalized === exact, created_at: iso(row.created_at) })), next_cursor: result.rows.length > size ? String(offset + size) : null };
     },
     async bindOuijaReply(key, parentId) {
       const parent = await query('SELECT id FROM posts WHERE id = $1', [parentId]);
