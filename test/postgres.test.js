@@ -263,6 +263,7 @@ test('social tables keep one vote per account and reject self-follows', async ()
   assert.equal(feed.conversations[0].post.id, post.id);
   assert.equal(feed.conversations[0].reply_count, 1);
   assert.equal(feed.conversations[0].previews[0].message, 'A postgres reply');
+  assert.equal(feed.conversations[0].previews[0].depth, 1);
   assert.equal(feed.conversations[0].post.timestamp, post.timestamp);
   const next = await store.conversationFeed({ limit: 1, cursor: feed.next_cursor });
   assert.equal(next.conversations[0].post.id, quiet.id);

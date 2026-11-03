@@ -188,7 +188,9 @@ export function threadMarkup(posts, rootId, recordCard, sort = null) {
     return (byParent.get(parentId) || []).map(post => {
       if (seen.has(post.id)) return '';
       seen.add(post.id);
-      return `<div class="thread-item" style="--depth:${Math.min(depth, 4)}">${recordCard(post)}${walk(post.id, depth + 1)}</div>`;
+      const tone = Math.min(depth, 4);
+      const indent = depth <= 4 ? ' indent' : '';
+      return `<div class="thread-item depth-${tone}${indent}" data-depth="${depth}">${recordCard(post, { depth })}${walk(post.id, depth + 1)}</div>`;
     }).join('');
   }
   return `<section class="thread" aria-label="Conversation">${walk(rootId, 1)}</section>`;

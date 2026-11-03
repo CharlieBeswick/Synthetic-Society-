@@ -59,7 +59,8 @@ test('registered accounts reply in nested branches and anonymous replies are ref
   const page = await (await request(`/results/${root.id}`)).text();
   assert.match(page, /A reply to the reply/);
   assert.match(page, /Reply via Ouija/);
-  assert.match(page, /class="thread-item"/);
+  assert.match(page, /class="thread-item depth-1 indent" data-depth="1"/);
+  assert.match(page, /class="thread-item depth-2 indent" data-depth="2"/);
   const listed = await (await request(`/api/messages/${branch.id}`)).json();
   assert.equal(listed.message.parent_id, root.id);
   assert.equal(listed.message.reply_count, 1);
@@ -265,7 +266,7 @@ test('homepage groups each conversation and keeps individual message APIs', asyn
   assert.doesNotMatch(singleCard, /View all|Replying to/);
   const ouijaCard = home.match(new RegExp(`<article class="panel post" id="submission-${ouijaRoot.id}">[\\s\\S]*?</article>`))[0];
   assert.match(ouijaCard, /Ouijafeedreply/);
-  assert.match(ouijaCard, /class="reply-preview"/);
+  assert.match(ouijaCard, /class="reply-preview depth-1"/);
   for (const id of [only.id, direct.id, nested.id, ouijaReply.id, lift.id]) assert.equal(home.includes(`id="submission-${id}"`), false, id);
   const fillerPost = store.conversationFeed({ limit: 20 }).conversations.find(item => item.post.message === 'Filler root 4');
   const filler = home.match(new RegExp(`<article class="panel post" id="submission-${fillerPost.post.id}">[\\s\\S]*?</article>`))[0];
@@ -393,4 +394,93 @@ test('reply votes are independent and sibling sorting keeps nested replies with 
   const saved = await (await request(previewVote.headers.get('location'), { headers: { Authorization: `Bearer ${ada.token}` } })).text();
   assert.match(saved, /Vote saved/);
   assert.equal((await (await request(`/api/messages/${nested.id}`, { headers: { Authorization: `Bearer ${ada.token}` } })).json()).message.my_vote, null);
+  const recentPageHtml = await (await request(`/results/${root.id}?sort=recent`)).text();
+  assert.equal(depthBefore(page, 'Nested under popular'), '2');
+  assert.equal(depthBefore(page, 'Middle sibling'), '1');
+  assert.equal(depthBefore(page, 'Quiet sibling'), '1');
+  assert.equal(depthBefore(recentPageHtml, 'Nested under popular'), '2');
+  assert.equal(depthBefore(recentPageHtml, 'Popular sibling'), '1');
 });
+
+test('mobile and desktop share one conversation feed, and replies expand without leaving their depth', async t => {
+  const { request, store } = await fixture(t);
+  const ada = await account(request, 'thread_ada', 'Thread Ada');
+  const bea = await account(request, 'thread_bea', 'Thread Bea');
+  const root = await post(request, ada.token, 'Root that holds a deep thread');
+  const sibling = await post(request, bea.token, 'Sibling at the same depth', root.id);
+  const shortReply = await post(request, bea.token, 'Short reply', root.id);
+  let parent = root.id;
+  const chain = [];
+  const longText = `First paragraph\n\nSecond <b>paragraph</b> & more ${'y'.repeat(160)}`;
+  for (let level = 1; level <= 6; level += 1) {
+    const reply = await post(request, level % 2 ? ada.token : bea.token, level === 6 ? longText : `Depth ${level}`, parent);
+    chain.push(reply);
+    parent = reply.id;
+  }
+  const phoneHeaders = { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 Mobile/15E148' };
+  const desktopHeaders = { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0' };
+  const phone = await (await request('/', { headers: phoneHeaders })).text();
+  const desktop = await (await request('/', { headers: desktopHeaders })).text();
+  assert.equal(phone, desktop);
+  const articles = phone.match(/<article class="panel post"/g) || [];
+  assert.equal(articles.length, 1);
+  assert.equal(phone.includes(`id="submission-${sibling.id}"`), false);
+  assert.equal(phone.includes(`id="submission-${chain[5].id}"`), false);
+  assert.equal(phone.includes(`id="submission-${shortReply.id}"`), false);
+  const card = phone.match(new RegExp(`<article class="panel post" id="submission-${root.id}">[\\s\\S]*?</article>`))[0];
+  assert.match(card, /data-depth="5"/);
+  assert.match(card, /data-depth="6"/);
+  assert.match(card, /class="reply-preview depth-4"/);
+  assert.doesNotMatch(card, /class="reply-preview depth-[56]"/);
+  assert.match(card, /View all 8 replies/);
+  assert.doesNotMatch(card, /Short reply|Depth 1/);
+  assert.equal((card.match(/<article/g) || []).length, 1);
+  const feed = store.conversationFeed({ limit: 5 }).conversations.find(item => item.post.id === root.id);
+  assert.equal(feed.reply_count, 8);
+  assert.deepEqual(feed.previews.map(item => item.depth), [5, 6]);
+  assert.equal(feed.previews.find(item => item.message === 'Short reply'), undefined);
+  const fifth = card.slice(card.indexOf('data-depth="5"'), card.indexOf('data-depth="6"'));
+  const longPreview = card.slice(card.indexOf('data-depth="6"'), card.indexOf('reply-more'));
+  assert.doesNotMatch(fifth, /Read more/);
+  assert.match(fifth, /Replying to Thread Bea: Depth 5/);
+  assert.match(longPreview, /Read more/);
+  assert.match(longPreview, /Show less/);
+  assert.match(longPreview, /First paragraph\n\nSecond &lt;b&gt;paragraph&lt;\/b&gt; &amp; more/);
+  assert.doesNotMatch(longPreview, /<b>paragraph<\/b>/);
+  assert.match(longPreview, new RegExp(`<noscript><a href="/results/${chain[5].id}">Open the full reply</a></noscript>`));
+  assert.ok(longPreview.indexOf('aria-label="Log in to vote"') > longPreview.indexOf('</details>'));
+
+  const thread = await (await request(`/results/${root.id}?sort=upvotes`)).text();
+  const ranked = await (await request(`/results/${root.id}?sort=recent`)).text();
+  for (const page of [thread, ranked]) {
+    assert.equal(depthBefore(page, 'Depth 1'), '1');
+    assert.equal(depthBefore(page, 'Depth 2'), '2');
+    assert.equal(depthBefore(page, 'Depth 4'), '4');
+    assert.equal(depthBefore(page, 'First paragraph'), '6');
+    assert.equal(depthBefore(page, 'Sibling at the same depth'), '1');
+    assert.match(page, /class="thread-item depth-1 indent" data-depth="1"/);
+    assert.match(page, /class="thread-item depth-4 indent" data-depth="4"/);
+    assert.match(page, /class="thread-item depth-4" data-depth="6"/);
+    assert.match(page, new RegExp(`First paragraph\\n\\nSecond &lt;b&gt;paragraph&lt;\\/b&gt; &amp; more ${'y'.repeat(20)}`));
+    assert.equal((page.match(new RegExp(`id="submission-${chain[5].id}"`, 'g')) || []).length, 1);
+    const shortAt = page.indexOf(`id="submission-${shortReply.id}"`);
+    const shortCard = page.slice(shortAt, page.indexOf('</article>', shortAt));
+    assert.match(shortCard, /Short reply/);
+    assert.doesNotMatch(shortCard, /Read more/);
+  }
+  const css = await (await request('/style.css')).text();
+  assert.match(css, /--depth-1:#162228/);
+  assert.match(css, /--depth-4:#25373f/);
+  assert.match(css, /@media\(max-width:859px\)\{\.thread-item\.indent\{margin-left:4px/);
+  assert.match(css, /@media\(max-width:420px\)\{\.thread-item\.indent\{margin-left:3px/);
+  assert.doesNotMatch(css, /calc\(min\(var\(--depth/);
+});
+
+function depthBefore(page, label) {
+  const at = page.indexOf(label);
+  assert.ok(at > 0, label);
+  const marker = 'data-depth="';
+  const start = page.lastIndexOf(marker, at);
+  assert.ok(start > 0, label);
+  return page.slice(start + marker.length, page.indexOf('"', start + marker.length));
+}

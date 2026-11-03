@@ -122,6 +122,21 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
     }
     return record;
   }
+  function replyDepths(database, ids) {
+    const depthOf = new Map();
+    if (!ids.length) return depthOf;
+    const marks = ids.map(() => '?').join(',');
+    for (const row of database.prepare(`WITH RECURSIVE ancestry(id, parent_id, origin, hops) AS (
+      SELECT id, parent_id, id, 0 FROM messages WHERE id IN (${marks})
+      UNION ALL
+      SELECT parent.id, parent.parent_id, ancestry.origin, ancestry.hops + 1
+      FROM messages parent
+      JOIN ancestry ON ancestry.parent_id = parent.id
+      WHERE ancestry.hops < 12 AND parent.id <> ancestry.origin
+    )
+    SELECT origin AS id, MAX(hops) AS depth FROM ancestry GROUP BY origin`).all(...ids)) depthOf.set(row.id, Number(row.depth) || 1);
+    return depthOf;
+  }
   function replyPreviews(ids) {
     const grouped = new Map();
     if (!ids.length) return grouped;
@@ -139,10 +154,12 @@ export function openStore(path = process.env.DATABASE_PATH || './data/messages.s
       ) ranked
       WHERE rn <= 2
       ORDER BY sequence ASC`).all(...ids);
+    const depthOf = replyDepths(db, rows.map(row => row.id));
     for (const row of rows) {
       const preview = shape(row);
       preview.parent_name = row.parent_name || null;
       preview.parent_is_root = row.parent_is_root === 1;
+      preview.depth = depthOf.get(row.id) || 1;
       const list = grouped.get(row.conversation_id) || [];
       list.push(preview);
       grouped.set(row.conversation_id, list);

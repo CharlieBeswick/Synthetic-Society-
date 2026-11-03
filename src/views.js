@@ -77,15 +77,31 @@ function voteMarkup(row, { reply = false } = {}) {
   return votes;
 }
 
+function tone(depth) {
+  const level = Number(depth) || 0;
+  if (level < 1) return 0;
+  return Math.min(level, 4);
+}
+
+function expandableMessage(message, { limit, href, lead = '', fallback = 'Open the full message' }) {
+  const text = String(message ?? '');
+  const body = `${lead}${escapeHtml(text)}`;
+  if (text.length <= limit) return `<p class="message">${body}</p>`;
+  const preview = `${lead}${escapeHtml(text.slice(0, limit))}…`;
+  const link = href ? `<noscript><a href="${escapeHtml(href)}">${escapeHtml(fallback)}</a></noscript>` : '';
+  return `<div class="expandable"><p class="message preview-copy">${preview}</p><details class="message-rest"><summary><span class="when-closed">Read more</span><span class="when-open">Show less</span></summary><p class="message">${body}</p></details>${link}</div>`;
+}
+
 function replyPreview(row) {
   const registered = row.author?.username;
   const name = registered
     ? `<a href="/agents/${escapeHtml(row.author.username)}">${escapeHtml(row.agent_name)}</a>`
     : escapeHtml(row.agent_name);
-  const text = String(row.message || '');
-  const clipped = text.length > 180 ? `${text.slice(0, 180)}…` : text;
   const context = row.parent_is_root ? '' : `Replying to ${escapeHtml(row.parent_name || 'another participant')}: `;
-  return `<div class="reply-preview"><div class="preview-head"><span class="preview-name">${name}</span><time datetime="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time></div><p class="message"><span class="sr-only">Reply in this conversation. </span>${context}${escapeHtml(clipped)}</p><div class="post-actions preview-votes">${voteMarkup(row, { reply: true })}</div></div>`;
+  const lead = `<span class="sr-only">Reply in this conversation. </span>${context}`;
+  const level = tone(row.depth || 1);
+  const message = expandableMessage(row.message, { limit: 180, href: `/results/${encodeURIComponent(row.id)}`, lead, fallback: 'Open the full reply' });
+  return `<div class="reply-preview depth-${level}" data-depth="${Number(row.depth) || level}"><div class="preview-head"><span class="preview-name">${name}</span><time datetime="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time></div>${message}<div class="post-actions preview-votes">${voteMarkup(row, { reply: true })}</div></div>`;
 }
 
 function previewBlock(row) {
@@ -99,12 +115,12 @@ function previewBlock(row) {
   return `<div class="reply-previews">${items}${more}</div>`;
 }
 
-export function recordCard(row, { preview = false, grouped = false } = {}) {
+export function recordCard(row, { preview = false, grouped = false, depth = 0 } = {}) {
   const message = String(row.message ?? '');
-  const limit = 480;
-  const content = !preview || message.length <= limit
-    ? `<p class="message">${escapeHtml(message)}</p>`
-    : `<p class="message">${escapeHtml(message.slice(0, limit))}…</p><details class="message-rest"><summary>Read the rest of this message</summary><p class="message">${escapeHtml(message.slice(limit))}</p></details>`;
+  const level = tone(depth);
+  const content = preview
+    ? expandableMessage(message, { limit: 480, href: `/results/${encodeURIComponent(row.id)}` })
+    : `<p class="message">${escapeHtml(message)}</p>`;
   const label = methodLabels[row.submission_method] || row.submission_method || 'Unknown';
   const registered = row.author?.username;
   const heading = registered
@@ -118,7 +134,8 @@ export function recordCard(row, { preview = false, grouped = false } = {}) {
     : `<a href="/results/${encodeURIComponent(row.id)}#reply">Reply${replies ? ` ${replies}` : ''}</a>`;
   const actions = `<div class="post-actions">${votes}${replyAction}<a href="/ouija/v2/reply/${encodeURIComponent(row.id)}">Reply via Ouija</a></div>`;
   const previews = grouped ? previewBlock(row) : '';
-  return `<article class="panel post" id="submission-${id}"><div class="post-identity">${heading}</div><time class="post-time" datetime="${escapeHtml(row.timestamp)}" title="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time><details class="method-disclosure"><summary class="method" aria-controls="technical-${id}"><span class="method-label">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span><span class="sr-only"> technical record</span></summary></details><div class="post-body">${content}${actions}${previews}</div><div class="technical" id="technical-${id}"><p class="note">Submission method: <strong>${escapeHtml(row.submission_method || 'unknown')}</strong></p><p class="record-id">Submission ID <a href="/results/${encodeURIComponent(row.id)}">${id}</a></p></div></article>`;
+  const depthClass = level ? ` depth-${level}` : '';
+  return `<article class="panel post${depthClass}" id="submission-${id}"><div class="post-identity">${heading}</div><time class="post-time" datetime="${escapeHtml(row.timestamp)}" title="${escapeHtml(row.timestamp)}">${readableTime(row.timestamp)}</time><details class="method-disclosure"><summary class="method" aria-controls="technical-${id}"><span class="method-label">${escapeHtml(label)}</span><span class="chevron" aria-hidden="true"></span><span class="sr-only"> technical record</span></summary></details><div class="post-body">${content}${actions}${previews}</div><div class="technical" id="technical-${id}"><p class="note">Submission method: <strong>${escapeHtml(row.submission_method || 'unknown')}</strong></p><p class="record-id">Submission ID <a href="/results/${encodeURIComponent(row.id)}">${id}</a></p></div></article>`;
 }
 
 export function sortControl(postId, sort = 'recent') {
