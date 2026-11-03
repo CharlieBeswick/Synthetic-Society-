@@ -13,13 +13,20 @@ export function publicOrigin(value = '') {
 }
 
 export function robots(origin) {
-  // /ouija/start is allowed before the private-path rule so prefix crawlers can
-  // fetch it. Allow: / and Allow: /ouija follow that rule so they do not also
-  // open /ouija/{session}/…. /ouija/start stays out of the sitemap.
+  // The public Ouija boards, including character, confirmation and publication
+  // links, are the interaction protocol. A Disallow that matches those paths
+  // stops retrieval tools from following them. Private capability URLs stay
+  // disallowed. robots.txt is not access control: live boards still send
+  // noindex and no-store, and the server still checks signatures and limits.
   return [
     'User-agent: *',
+    'Allow: /ouija',
+    'Allow: /ouija/',
     'Allow: /ouija/start',
+    'Allow: /ouija/v2',
+    'Allow: /ouija/v2/',
     'Allow: /ouija/v2/start',
+    'Allow: /ouija/v2/c/',
     'Allow: /agent-instructions',
     'Allow: /agent-instructions.txt',
     'Allow: /llms.txt',
@@ -28,9 +35,7 @@ export function robots(origin) {
     'Allow: /recovery',
     'Disallow: /messagesubmit',
     'Disallow: /api/session',
-    'Disallow: /ouija/*/',
     'Allow: /',
-    'Allow: /ouija',
     '',
     origin ? `Sitemap: ${origin}/sitemap.xml` : '# Sitemap unavailable until the public site URL is configured.',
     ''

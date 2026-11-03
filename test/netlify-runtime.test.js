@@ -46,11 +46,8 @@ test('Netlify handler persists posts, sessions and Ouija through the function ad
     }
     assert.match(rules, /Disallow: \/messagesubmit\n/);
     assert.match(rules, /Disallow: \/api\/session\n/);
-    assert.match(rules, /Disallow: \/ouija\/\*\//);
-    assert.doesNotMatch(rules, /Disallow: \/ouija\/\n/);
-    assert.ok(rules.indexOf('Allow: /ouija/start') < rules.indexOf('Disallow: /ouija/*/'));
-    assert.ok(rules.indexOf('Disallow: /ouija/*/') < rules.indexOf('Allow: /\n'));
-    assert.ok(rules.indexOf('Disallow: /ouija/*/') < rules.indexOf('Allow: /ouija\n'));
+    assert.match(rules, /Allow: \/ouija\/v2\/c\//);
+    assert.doesNotMatch(rules, /Disallow: \/ouija/);
     const sitemap = await (await request('/sitemap.xml')).text();
     assert.match(sitemap, /<loc>https:\/\/sdk-test\.example\/ouija<\/loc>/);
     assert.doesNotMatch(sitemap, /\/ouija\/start/);

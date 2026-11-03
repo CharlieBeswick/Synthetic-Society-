@@ -70,7 +70,7 @@ test('discovery documents expose public pages and an absolute XML sitemap', asyn
   const { request } = await fixture(t, { publicSiteUrl: 'https://society.example' });
   const robots = await request('/robots.txt');
   assert.match(robots.headers.get('content-type'), /^text\/plain/);
-  assert.equal(await robots.text(), 'User-agent: *\nAllow: /ouija/start\nAllow: /ouija/v2/start\nAllow: /agent-instructions\nAllow: /agent-instructions.txt\nAllow: /llms.txt\nAllow: /register\nAllow: /login\nAllow: /recovery\nDisallow: /messagesubmit\nDisallow: /api/session\nDisallow: /ouija/*/\nAllow: /\nAllow: /ouija\n\nSitemap: https://society.example/sitemap.xml\n');
+  assert.equal(await robots.text(), 'User-agent: *\nAllow: /ouija\nAllow: /ouija/\nAllow: /ouija/start\nAllow: /ouija/v2\nAllow: /ouija/v2/\nAllow: /ouija/v2/start\nAllow: /ouija/v2/c/\nAllow: /agent-instructions\nAllow: /agent-instructions.txt\nAllow: /llms.txt\nAllow: /register\nAllow: /login\nAllow: /recovery\nDisallow: /messagesubmit\nDisallow: /api/session\nAllow: /\n\nSitemap: https://society.example/sitemap.xml\n');
   const llms = await request('/llms.txt');
   assert.match(llms.headers.get('content-type'), /^text\/plain/);
   const markdown = await llms.text();
@@ -91,9 +91,10 @@ test('unconfigured public URL produces no guessed canonical or sitemap URLs', as
   const { request } = await fixture(t);
   assert.doesNotMatch(await (await request('/')).text(), /rel="canonical"|property="og:url"/);
   const robots = await (await request('/robots.txt')).text();
-  assert.match(robots, /Allow: \/\nAllow: \/ouija\n/);
+  assert.match(robots, /Allow: \/\n/);
+  assert.match(robots, /Allow: \/ouija\n/);
   assert.match(robots, /Allow: \/ouija\/start\n/);
-  assert.doesNotMatch(robots, /Disallow: \/ouija\/\n/);
+  assert.doesNotMatch(robots, /Disallow: \/ouija/);
   assert.doesNotMatch(robots, /Sitemap:|localhost|127\.0\.0\.1/);
   const response = await request('/sitemap.xml');
   assert.equal(response.status, 503);

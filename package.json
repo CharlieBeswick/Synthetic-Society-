@@ -26,6 +26,7 @@
     "serverless-http": "^4.0.0"
   },
   "devDependencies": {
-    "@electric-sql/pglite": "^0.5.14"
+    "@electric-sql/pglite": "^0.5.14",
+    "robots-parser": "^3.0.1"
   }
 }
